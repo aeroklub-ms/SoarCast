@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<!--
+  Championship Broadcast Studio — Timing Tower (broadcast overlay)
+  Per-pilot turnpoint leg splits + per-class fastest-leg highlight.
+  Copyright (C) 2026  Championship Broadcast Studio contributors — GPL v3.0.
+
+  Transparent 1920x1080 canvas consumed by OBS as a Browser Source over the
+  CesiumJS scene.  Listens on BroadcastChannel('cbs_overlays') for the
+  tracker's `timing` message:
+    { type:'timing',
+      classes:{ [cls]: { tpNames:[...], tpCount:N,
+                         rows:[ {name,id,livery,flarm,splits:{toIdx:secs},total,lastTp} ],
+                         fastest:{ toIdx:{secs,flarm} } } },
+      competitionDay:N }
+  The fastest split in each leg column is highlighted in the class accent.
+  Sample data renders until the first live message so OBS previews cleanly.
+-->
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Timing Tower — Championship Broadcast Studio</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@500;700;800&amp;display=swap" rel="stylesheet"/>
+<style>
+  html,body{ margin:0; padding:0; }
+  body{
+    background-color:transparent;
+    background-image:
+      linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%);
+    background-size:20px 20px; background-position:0 0,0 10px,10px -10px,-10px 0px;
+    overflow:hidden; font-family:Inter,sans-serif;
+  }
+  .mono{ font-family:"JetBrains Mono",monospace; }
+  .panel-bg{ background:linear-gradient(180deg, rgba(15,15,15,.96) 0%, rgba(15,15,15,.9) 100%); backdrop-filter:blur(5px); }
+  .row-alt{ background:rgba(26,26,26,.45); }
+  .row-base{ background:rgba(15,15,15,.35); }
+  .cell{ font-size:14px; line-height:18px; }
+  @keyframes rowsFade{ 0%{opacity:1} 45%{opacity:.25;filter:blur(1px)} 100%{opacity:1;filter:blur(0)} }
+  .rows-swap{ animation:rowsFade .6s ease; }
+  @keyframes lblIn{ from{transform:translateY(10px);opacity:0} to{transform:translateY(0);opacity:1} }
+  .lbl-in{ animation:lblIn .3s ease; }
+  .devbar button{ font-family:Inter; }
+</style>
+</head>
+<body class="antialiased">
+
+<div id="stage" class="relative w-[1920px] h-[1080px] overflow-hidden" style="transform-origin:top left;">
+
+  <!-- Timing tower: centred card, auto width/height, sits in the lower third -->
+  <div id="panel" class="panel-bg absolute left-1/2 -translate-x-1/2 bottom-[70px] border border-[#1A1A1A] z-10"
+       style="--accent:#14A89C; min-width:860px;">
+
+    <!-- Header -->
+    <div class="flex items-stretch border-b-2" style="border-color:#14A89C;">
+      <div class="px-4 py-2.5 flex items-center" style="background:#14A89C;" id="accentChip">
+        <span class="mono text-[11px] font-extrabold tracking-[0.18em] text-black/85">SPLITS</span>
+      </div>
+      <div class="px-4 py-2 flex flex-col justify-center bg-[#0A0A0A] flex-1">
+        <h1 id="className" class="text-[15px] leading-[18px] font-bold text-white tracking-wider">18-METRE</h1>
+        <p id="classSub" class="mono text-[9px] leading-[12px] text-white/45 tracking-widest">TURNPOINT LEG SPLITS</p>
+      </div>
+      <div class="px-4 py-2 flex flex-col justify-center items-end bg-[#0A0A0A] border-l border-[#1A1A1A]">
+        <span class="mono text-[9px] text-white/45 tracking-widest">DAY</span>
+        <span id="dayNum" class="mono text-[15px] font-bold text-white leading-[18px]">3</span>
+      </div>
+    </div>
+
+    <!-- Column headers -->
+    <div id="colHead" class="flex items-center bg-[#0A0A0A] border-b border-[#1A1A1A] h-[26px]"></div>
+
+    <!-- Rows -->
+    <div id="rows" class="flex flex-col"></div>
+
+    <!-- Footer accent line -->
+    <div id="accentLine" class="h-[3px] w-full" style="background:#14A89C;box-shadow:0 -2px 10px rgba(20,168,156,.8);"></div>
+  </div>
+
+  <!-- DEV controls (ignored in OBS output) -->
+  <div class="devbar absolute left-[24px] bottom-[24px] flex gap-2 z-30 text-[11px]">
+    <button id="btnCycle" class="px-3 py-1.5 bg-black/70 border border-white/15 text-white/80 hover:text-white">▶ cycle class</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+
+  const CLASS = {
+    OPEN : { label:"OPEN CLASS",          color:"#1763B6" },
+    "15M": { label:"15-METRE",            color:"#2E9E4F" },
+    "18M": { label:"18-METRE",            color:"#14A89C" },
+    STD  : { label:"STANDARD",            color:"#B53FA0" },
+    CLUB : { label:"CLUB",                color:"#D9821A" },
+    "20M": { label:"20-METRE MULTI-SEAT", color:"#E0552B" },
+    WORLD: { label:"WORLD (PW-5)",        color:"#7A4FCB" }
+  };
+
+  function normaliseClassKey(raw){
+    if(!raw) return null;
+    const k = String(raw).toUpperCase().replace(/[^A-Z0-9]/g,'');
+    if(CLASS[k]) return k;
+    if(/^(18|15|20)M/.test(k)) return k.replace(/^(18|15|20).*$/, '$1M');
+    if(/STANDARD|STD/.test(k)) return 'STD';
+    if(/CLUB/.test(k))         return 'CLUB';
+    if(/OPEN/.test(k))         return 'OPEN';
+    if(/WORLD|PW5/.test(k))    return 'WORLD';
+    return k;
+  }
+
+  // mm:ss for a leg split; h:mm:ss / m:ss for a running total.
+  const fmtSplit = s => { if(s==null||!isFinite(s)) return "—"; const m=Math.floor(s/60), ss=Math.round(s%60); return m+":"+String(ss).padStart(2,"0"); };
+  const fmtTotal = s => { if(s==null||!isFinite(s)) return "—"; const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=Math.round(s%60); return (h>0? h+":"+String(m).padStart(2,"0") : m+":"+String(ss).padStart(2,"0")) + (h>0? ":"+String(ss).padStart(2,"0"):""); };
+
+  // ---- sample data (preview until the first live message) ----
+  let DATA = {
+    "18M": {
+      tpNames:["START","TP1","TP2","TP3","FIN"], tpCount:5,
+      rows:[
+        { name:"SCHMIDT", id:"JS1", livery:"#3B82F6", splits:{1:1042,2:1310,3:1188}, total:3540, speed:118, lastTp:3 },
+        { name:"VOSS",    id:"V3",  livery:"#EF4444", splits:{1:1090,2:1276,3:1205}, total:3571, speed:121, lastTp:3 },
+        { name:"BERG",    id:"EB",  livery:"#FACC15", splits:{1:1071,2:1322},         total:2393, speed:109, lastTp:2 },
+        { name:"DURAND",  id:"D2",  livery:"#F97316", splits:{1:1105},                total:1105, speed:104, lastTp:1 }
+      ],
+      fastest:{ 1:{secs:1042,flarm:"a"}, 2:{secs:1276,flarm:"b"}, 3:{secs:1188,flarm:"a"} }
+    },
+    STD: {
+      tpNames:["START","TP1","TP2","FIN"], tpCount:4,
+      rows:[
+        { name:"MARTIN", id:"MNT", livery:"#EF4444", splits:{1:1180,2:1402}, total:2582, speed:101, lastTp:2 },
+        { name:"REBER",  id:"RBR", livery:"#FACC15", splits:{1:1211},        total:1211, speed:97,  lastTp:1 }
+      ],
+      fastest:{ 1:{secs:1180,flarm:"x"}, 2:{secs:1402,flarm:"x"} }
+    }
+  };
+
+  let cycleOrder = ["18M","STD"];
+  let current = 0;
+
+  function render(animate){
+    const cls = cycleOrder[current];
+    const grp = DATA[cls];
+    if(!grp){ return; }
+    const reg = CLASS[cls] || { label: cls, color:"#9aa0a6" };
+    const accent = reg.color;
+
+    $("#panel").style.setProperty("--accent", accent);
+    $("#accentChip").style.background = accent;
+    $("#accentLine").style.background = accent;
+    $("#accentLine").style.boxShadow = "0 -2px 10px " + accent;
+    $("#panel").querySelector(".border-b-2").style.borderColor = accent;
+    $("#className").textContent = reg.label;
+    $("#classSub").textContent = `${grp.rows.length} PILOTS · TURNPOINT LEG SPLITS`;
+
+    const names = grp.tpNames || [];
+    // Column header: POS | PILOT | each TP (skip START, it has no split) | TOTAL
+    const tpCols = names.map((n,i)=>({i,n})).filter(c=>c.i>=1);
+    $("#colHead").innerHTML =
+      `<div class="w-[42px] text-center mono text-[9px] text-white/40 tracking-widest">POS</div>
+       <div class="w-[190px] mono text-[9px] text-white/40 tracking-widest pl-2">PILOT</div>` +
+      tpCols.map(c=>`<div class="w-[78px] text-center mono text-[9px] text-white/40 tracking-widest">${c.n}</div>`).join("") +
+      `<div class="w-[92px] text-center mono text-[9px] text-white/55 tracking-widest border-l border-[#1A1A1A]">TOTAL</div>` +
+      `<div class="w-[88px] text-center mono text-[9px] text-white/55 tracking-widest border-l border-[#1A1A1A]">AVG km/h</div>`;
+
+    const leaderTotal = grp.rows.length ? grp.rows[0].total : 0;
+
+    $("#rows").innerHTML = grp.rows.map((p,idx)=>{
+      const pos = idx+1;
+      const isLeader = pos===1;
+      const cells = tpCols.map(c=>{
+        const v = p.splits ? p.splits[c.i] : null;
+        const fast = grp.fastest && grp.fastest[c.i];
+        const isFastest = fast && v!=null && Math.abs(v - fast.secs) < 1;
+        const style = isFastest
+          ? `style="color:#0A0A0A;background:${accent};font-weight:800;"`
+          : (v!=null ? `class="text-white/90"` : `class="text-white/25"`);
+        return `<div class="w-[78px] text-center cell mono ${isFastest?'':''}" ${style}>${fmtSplit(v)}</div>`;
+      }).join("");
+
+      return `
+        <div class="flex items-center h-[36px] ${idx%2?'row-alt':'row-base'} border-b border-[#141414] relative">
+          ${isLeader?`<div class="absolute left-0 top-0 bottom-0 w-[3px]" style="background:${accent}"></div>`:``}
+          <div class="w-[42px] text-center mono text-[15px] font-bold ${isLeader?'':'text-white'}" ${isLeader?`style="color:${accent}"`:''}>${pos}</div>
+          <div class="w-[190px] flex items-center gap-2 pl-2 truncate">
+            <span class="w-[10px] h-[10px] rounded-full shrink-0" style="background:${p.livery}"></span>
+            <span class="text-[14px] font-bold text-white truncate">${p.name}</span>
+            <span class="mono text-[10px] text-white/40 shrink-0">·&nbsp;${p.id}</span>
+          </div>
+          ${cells}
+          <div class="w-[92px] text-center cell mono font-bold border-l border-[#1A1A1A] ${isLeader?'':'text-white'}" ${isLeader?`style="color:${accent}"`:''}>${fmtTotal(p.total)}</div>
+          <div class="w-[88px] text-center cell mono font-bold border-l border-[#1A1A1A] ${p.speed!=null?'text-white':'text-white/25'}">${p.speed!=null?p.speed:'—'}</div>
+        </div>`;
+    }).join("");
+
+    if(animate){ const r=$("#rows"); r.classList.remove("rows-swap"); void r.offsetWidth; r.classList.add("rows-swap");
+                 const h=$("#className"); h.classList.remove("lbl-in"); void h.offsetWidth; h.classList.add("lbl-in"); }
+  }
+
+  function cycle(){
+    if(cycleOrder.length<2) return;
+    current = (current+1) % cycleOrder.length;
+    render(true);
+  }
+  $("#btnCycle").addEventListener("click", cycle);
+
+  function fit(){
+    const s = Math.min(window.innerWidth/1920, window.innerHeight/1080);
+    $("#stage").style.transform = `scale(${s})`;
+  }
+  window.addEventListener("resize", fit); fit();
+  render(false);
+  let cycleTimer = setInterval(cycle, 12000);
+
+  // ---- live feed (tracker.html → 'cbs_overlays', type 'timing') ----
+  try {
+    const bc = new BroadcastChannel('cbs_overlays');
+    bc.onmessage = (e)=>{
+      const m = e.data;
+      if(!m || m.type !== 'timing') return;
+      const next = {};
+      for(const rawCls of Object.keys(m.classes||{})){
+        const key = normaliseClassKey(rawCls);
+        if(!key) continue;
+        if(!CLASS[key]) CLASS[key] = { label: rawCls.toUpperCase(), color:'#9aa0a6' };
+        next[key] = m.classes[rawCls];
+      }
+      if(!Object.keys(next).length) return;
+      DATA = next;
+      if(m.competitionDay) $("#dayNum").textContent = m.competitionDay;
+      const live = Object.keys(DATA);
+      const prev = cycleOrder[current];
+      cycleOrder = live;
+      const ni = cycleOrder.indexOf(prev);
+      current = ni>=0 ? ni : (current % cycleOrder.length);
+      render(false);
+    };
+  } catch(err){ console.warn('overlay bus unavailable', err); }
+})();
+</script>
+</body>
+</html>

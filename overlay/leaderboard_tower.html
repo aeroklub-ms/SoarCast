@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<!--
+  Championship Broadcast Studio — Leaderboard Tower (broadcast overlay)
+  Reactive task visualization + gap calculation (Subsystems 2 & 5).
+  Copyright (C) 2026  Championship Broadcast Studio contributors — GPL v3.0.
+
+  Transparent 1920x1080 canvas, hard against the left edge, consumed by OBS
+  as a Browser Source overlaid on the CesiumJS 3D scene.
+
+  Gaps = TASK DISTANCE REMAINING differences in kilometres (Subsystem 5):
+    Leader            -> "LEADER"  in the class accent colour
+    Gap >= 1 km       -> "+45 km"  (whole km, no decimals) white
+    Gap <  1 km       -> "<1 km"   amber #FFA500
+    Finished / landed -> "FIN"     dim
+
+  Visual structure preserved from the approved Stitch design.
+  Everything below is data-driven so it can be wired to live telemetry.
+-->
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Leaderboard Tower — Championship Broadcast Studio</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@500;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: { extend: {
+      colors: {
+        "on-surface":"#e5e2e1","on-surface-variant":"#c4c7c8","primary":"#ffffff",
+        "outline":"#8e9192","amber-accent":"#FFA500",
+        "f1-dark":"#0F0F0F","f1-darker":"#0A0A0A","f1-divider":"#1A1A1A"
+      },
+      borderRadius:{ DEFAULT:"0px","lg":"0px","xl":"0px","full":"9999px" },
+      fontFamily:{ "data-mono":["JetBrains Mono"],"body-standard":["Inter"],
+        "header-uppercase":["Inter"],"data-lg":["JetBrains Mono"],"label-primary":["Inter"] }
+    }}
+  }
+</script>
+<style>
+  html,body{ margin:0; padding:0; }
+  body{
+    background-color:transparent;
+    background-image:
+      linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%);
+    background-size:20px 20px; background-position:0 0,0 10px,10px -10px,-10px 0px;
+    overflow:hidden; font-family:Inter,sans-serif;
+  }
+  .material-symbols-outlined{ font-variation-settings:'FILL' 1,'wght' 500,'GRAD' 0,'opsz' 20; }
+
+  .tower-bg{ background:linear-gradient(to right, rgba(15,15,15,.95) 0%, rgba(15,15,15,.85) 100%); backdrop-filter:blur(4px); }
+  .row-alt{ background:rgba(26,26,26,.4); }
+  .row-base{ background:rgba(15,15,15,.4); }
+
+  .text-micro{ font-size:9px;  line-height:12px; font-weight:500; }
+  .text-mini { font-size:10px; line-height:14px; font-weight:500; }
+  .text-pos  { font-size:15px; line-height:20px; font-weight:700; }
+  .comp-id   { font-size:13px; line-height:18px; font-weight:700; }
+
+  /* glow uses the active class accent via a CSS var */
+  .glow-line{ box-shadow:0 -2px 10px var(--accent-glow, rgba(20,168,156,.8)); }
+
+  /* class-switch animation */
+  @keyframes slideOutUp{ to{ transform:translateY(-12px); opacity:0; } }
+  @keyframes slideInUp { from{ transform:translateY(12px); opacity:0; } to{ transform:translateY(0); opacity:1; } }
+  .lbl-out{ animation:slideOutUp .32s ease forwards; }
+  .lbl-in { animation:slideInUp  .32s ease forwards; }
+  @keyframes rowsFade{ 0%{opacity:1} 45%{opacity:.25;filter:blur(1px)} 100%{opacity:1;filter:blur(0)} }
+  .rows-swap{ animation:rowsFade .7s ease; }
+
+  /* dev controls — NOT broadcast output */
+  .devbar button{ font-family:Inter; }
+</style>
+</head>
+<body class="text-on-surface antialiased">
+
+<!-- 1920x1080 stage scaled to fit the preview; exact pixels in OBS -->
+<div id="stage" class="relative w-[1920px] h-[1080px] overflow-hidden" style="transform-origin:top left;">
+
+  <!-- Leaderboard Tower — sits 50px from top so the logo badge has room.
+       Height is AUTO (grows with row count), never forced to full height. -->
+  <div id="tower" class="w-[230px] tower-bg flex flex-col absolute left-0 top-[50px] border-r border-f1-divider z-10"
+       style="--accent:#14A89C;">
+
+    <!-- Top logo badge — circular drop target. At runtime, src is set by chooseLogo():
+         club logo first, agency logo as fallback, neutral ring if neither exists. -->
+    <div class="relative flex justify-center z-20" style="height:44px;">
+      <div id="logoBadge" class="absolute -top-[36px] w-[80px] h-[80px] bg-f1-darker rounded-full border-2 border-white/80 flex items-center justify-center shadow-lg overflow-hidden">
+        <img id="logoImg" class="w-full h-full object-cover hidden" alt=""/>
+        <span id="logoPlaceholder" class="font-data-lg text-[9px] tracking-widest text-on-surface/45">LOGO</span>
+      </div>
+    </div>
+
+    <!-- Class label + subtitle -->
+    <div id="header" class="px-3 pt-4 pb-2 bg-f1-darker relative border-b-2" style="border-color:#14A89C;">
+      <h1 id="className" class="font-header-uppercase text-[16px] leading-[20px] font-bold text-primary tracking-wider mb-1">18-METRE</h1>
+      <p id="classSub" class="font-data-mono text-micro text-on-surface-variant tracking-widest">14 PILOTS</p>
+      <!-- split underline (merged view only) sits on top of the border -->
+      <div id="splitUnderline" class="absolute left-0 right-0 bottom-[-2px] h-[2px] hidden"></div>
+    </div>
+
+    <!-- Task info strip: competition day + per-class task distance.
+         Each class flies its own task, so the distance changes when the
+         leaderboard cycles between classes. -->
+    <div class="h-[24px] bg-[#0A0A0A] flex justify-between items-center px-3 border-b border-f1-divider">
+      <div class="flex items-center gap-1.5">
+        <span class="material-symbols-outlined text-[13px] text-outline">flag</span>
+        <span id="taskName" class="font-data-mono text-mini text-outline">DAY 3</span>
+      </div>
+      <span id="taskDist" class="font-data-mono text-mini text-primary">312 km</span>
+    </div>
+
+    <!-- Rows (the tower's height ends right after these) -->
+    <div id="rows" class="flex flex-col"></div>
+
+    <!-- Bottom accent line -->
+    <div id="accentLine" class="h-[3px] w-full glow-line" style="background:#14A89C;"></div>
+  </div>
+
+  <!-- DEV controls (delete when wiring to live data) -->
+  <div class="devbar absolute left-[24px] bottom-[24px] flex gap-2 z-30 text-[11px]">
+    <button id="btnCycle" class="px-3 py-1.5 bg-black/70 border border-white/15 text-white/80 hover:text-white">▶ cycle class</button>
+    <button id="btnMerge" class="px-3 py-1.5 bg-black/70 border border-white/15 text-white/80 hover:text-white">⤧ toggle merged</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+
+  // ---- event/task config. At runtime these come from event_info_panel.html
+  //      (club logo, agency logo) and the task manager. ----
+  const EVENT = {
+    clubLogo:   null,   // e.g. "data/club_logo.png"   — preferred
+    agencyLogo: null,   // e.g. "data/agency_logo.png" — fallback
+    competitionDay: 3   // current competition day number (from the go-live day counter)
+  };
+
+  // Each CLASS flies its OWN task on a given day, so distance differs per class.
+  // The label is day-based ("DAY 3"), not an arbitrary letter. At runtime this
+  // is replaced by the tracker.html broadcast.
+  let TASKS = {
+    OPEN : { distanceKm: 348 },
+    "15M": { distanceKm: 276 },
+    "18M": { distanceKm: 312 },
+    STD  : { distanceKm: 289 },
+    CLUB : { distanceKm: 245 },
+    "20M": { distanceKm: 301 },
+    WORLD: { distanceKm: 198 }
+  };
+
+  // Club logo first, agency as fallback, neutral ring if neither.
+  function chooseLogo(){
+    const src = EVENT.clubLogo || EVENT.agencyLogo;
+    const img = $("#logoImg"), ph = $("#logoPlaceholder");
+    if(src){ img.src = src; img.classList.remove("hidden"); ph.classList.add("hidden"); }
+    else   { img.classList.add("hidden"); ph.classList.remove("hidden"); }
+  }
+
+  // ---- FAI class registry (accent colours match the merge modal) ----
+  const CLASS = {
+    OPEN : { label:"OPEN CLASS",          color:"#1763B6" },
+    "15M": { label:"15-METRE",            color:"#2E9E4F" },
+    "18M": { label:"18-METRE",            color:"#14A89C" },
+    STD  : { label:"STANDARD",            color:"#B53FA0" },
+    CLUB : { label:"CLUB",                color:"#D9821A" },
+    "20M": { label:"20-METRE MULTI-SEAT", color:"#E0552B" },
+    WORLD: { label:"WORLD (PW-5)",        color:"#7A4FCB" }
+  };
+
+  // hex -> rgba for the accent glow
+  const glow = hex => {
+    const n = parseInt(hex.slice(1),16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},.8)`;
+  };
+
+  // ---- runtime fields. tracker.html broadcasts pilot rankings on the
+  //      'cbs_overlays' channel every 3 s; sample data below is used only
+  //      until the first message arrives (so the tower still previews in
+  //      OBS before the tracker is up).
+  // Preview sample for ALL seven FAI classes — shown only until the tracker's
+  // first live broadcast replaces it.  Having every class here means the OBS
+  // preview already demonstrates the full cycle before the tracker is up.
+  let FIELDS = {
+    OPEN:[
+      {name:"NORD",   id:"NOR",livery:"#3B82F6",tdr:99.0},{name:"PIANO",  id:"PIA",livery:"#EF4444",tdr:100.2},
+      {name:"HAMM",   id:"HAM",livery:"#22C55E",tdr:101.1},{name:"ALONSO", id:"ALO",livery:"#A855F7",tdr:103.9}
+    ],
+    "15M":[
+      {name:"LEHMANN",id:"L1", livery:"#3B82F6",tdr:88.2},{name:"PETIT",  id:"PT", livery:"#EF4444",tdr:90.6},
+      {name:"OLSEN",  id:"OL", livery:"#FACC15",tdr:93.0},{name:"REYES",  id:"RY", livery:"#22C55E",tdr:97.4}
+    ],
+    "18M":[
+      {name:"SCHMIDT", id:"JS1",livery:"#3B82F6",tdr:121.4},{name:"VOSS",   id:"V3", livery:"#EF4444",tdr:122.1},
+      {name:"BERG",    id:"EB", livery:"#FACC15",tdr:123.6},{name:"ASGARD", id:"ASG",livery:"#A855F7",tdr:125.8},
+      {name:"LASSEN",  id:"LS8",livery:"#22C55E",tdr:128.7},{name:"DURAND", id:"D2", livery:"#F97316",tdr:130.9},
+      {name:"MEIER",   id:"M1", livery:"#22D3EE",tdr:133.2},{name:"ZANE",   id:"Z8", livery:"#EC4899",tdr:135.6},
+      {name:"TORRES",  id:"T4", livery:"#93C5FD",tdr:139.1},{name:"QUINN",  id:"Q1", livery:"#84CC16",tdr:143.7},
+      {name:"KOVAC",   id:"K9", livery:"#2DD4BF",tdr:146.0},{name:"FISCHER",id:"F7", livery:"#6366F1",tdr:151.3},
+      {name:"ROSSI",   id:"R2", livery:"#D97706",tdr:156.8},{name:"WALKER", id:"W5", livery:"#9CA3AF",tdr:0,finished:true}
+    ],
+    STD:[
+      {name:"MARTIN", id:"MNT",livery:"#EF4444",tdr:118.0},{name:"REBER", id:"RBR",livery:"#FACC15",tdr:119.2},
+      {name:"FONTAINE",id:"FNC",livery:"#F97316",tdr:121.5},{name:"CHANG", id:"C9", livery:"#22D3EE",tdr:124.4},
+      {name:"TALLIS", id:"TL", livery:"#EC4899",tdr:130.1}
+    ],
+    CLUB:[
+      {name:"NOVAK",  id:"AN", livery:"#2E9E4F",tdr:104.5},{name:"HORVAT", id:"HZ", livery:"#EF4444",tdr:106.8},
+      {name:"BIANCHI",id:"BC", livery:"#FACC15",tdr:110.2},{name:"DELACROIX",id:"DX",livery:"#22D3EE",tdr:115.6}
+    ],
+    "20M":[
+      {name:"KELLER", id:"K2", livery:"#3B82F6",tdr:133.0},{name:"SANTOS", id:"S5", livery:"#EF4444",tdr:135.9},
+      {name:"WEBER",  id:"WB", livery:"#A855F7",tdr:140.3}
+    ],
+    WORLD:[
+      {name:"NAGY",   id:"NG", livery:"#3B82F6",tdr:71.4},{name:"DUBOIS", id:"DB", livery:"#EF4444",tdr:73.2},
+      {name:"IVANOV", id:"IV", livery:"#FACC15",tdr:78.9}
+    ]
+  };
+
+  // ---- view state ----
+  // Cycle through every class present (sample shows all 7; live data replaces
+  // this with exactly the classes the tracker is broadcasting).
+  let cycleOrder = ["OPEN","15M","18M","STD","CLUB","20M","WORLD"];
+  let current = 0;
+  let merged = false;                        // show several classes together with chips
+  // Which classes the merged view combines.  Dynamic: defaults to all known
+  // classes and is replaced with the live class set on each tracker broadcast.
+  let mergeSet = ["18M","STD"];
+
+  // Normalise the class name tracker.html sends ("18-metre", "18m",
+  // "OPEN CLASS"...) into one of the registry keys above.  Allows the
+  // tracker to forward whatever case/spacing the studio config uses.
+  function normaliseClassKey(raw){
+    if(!raw) return null;
+    const k = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if(CLASS[k]) return k;
+    if(/^(18|15|20)M/.test(k))         return k.replace(/^(18|15|20).*$/, '$1M');
+    if(/STANDARD|STD/.test(k))         return 'STD';
+    if(/CLUB/.test(k))                 return 'CLUB';
+    if(/OPEN/.test(k))                 return 'OPEN';
+    if(/WORLD|PW5/.test(k))            return 'WORLD';
+    return k;
+  }
+
+  // ---- gap formatting (Subsystem 5) ----
+  function fmtGap(km, isLeader){
+    if(isLeader) return {txt:"LEADER", kind:"leader"};
+    if(km < 1)   return {txt:"<1 km",  kind:"amber"};
+    return {txt:"+"+Math.round(km)+" km", kind:"white"};
+  }
+
+  function activeList(){
+    let pool;
+    if(merged) pool = mergeSet.filter(c=>FIELDS[c]).flatMap(c => FIELDS[c].map(p => ({...p, cls:c})));
+    else       pool = FIELDS[cycleOrder[current]].map(p => ({...p, cls:cycleOrder[current]}));
+    const running  = pool.filter(p=>!p.finished).sort((a,b)=>a.tdr-b.tdr);
+    const finished = pool.filter(p=> p.finished);
+    return [...running, ...finished];
+  }
+
+  function render(animate){
+    const list = activeList();
+    const leaderTdr = (list.find(p=>!p.finished)||{}).tdr ?? 0;
+    const accent = merged ? "#FFFFFF" : CLASS[cycleOrder[current]].color;
+
+    // accent-driven bits
+    $("#tower").style.setProperty("--accent", accent);
+    const aline = $("#accentLine");
+    const sub = $("#splitUnderline");
+    const header = $("#header");
+
+    if(merged){
+      // split bottom border across merged classes
+      header.style.borderColor = "transparent";
+      sub.classList.remove("hidden");
+      sub.style.display = "flex";
+      sub.innerHTML = mergeSet.map(c=>`<div style="flex:1;background:${CLASS[c].color}"></div>`).join("");
+      // split accent line — N equal segments, one per merged class
+      const seg = 100 / Math.max(1, mergeSet.length);
+      aline.style.background = `linear-gradient(to right, ${mergeSet.map((c,i)=>`${CLASS[c].color} ${i*seg}% ${(i+1)*seg}%`).join(",")})`;
+      aline.style.setProperty("--accent-glow", "rgba(255,255,255,.5)");
+    } else {
+      header.style.borderColor = accent;
+      sub.classList.add("hidden");
+      aline.style.background = accent;
+      aline.style.setProperty("--accent-glow", glow(accent));
+    }
+
+    // label + subtitle
+    if(merged){
+      $("#className").textContent = mergeSet.join(" + ") + " (MERGED)";
+      const total = mergeSet.reduce((s,c)=>s+((FIELDS[c]||[]).length),0);
+      $("#classSub").textContent = `MERGED DISPLAY · ${total} PILOTS`;
+    } else {
+      const c = cycleOrder[current];
+      $("#className").textContent = CLASS[c].label;
+      $("#classSub").textContent = `${FIELDS[c].length} PILOTS`;
+    }
+
+    // task strip: day-based name + the task distance for THIS class
+    // (each class flies its own task, so distance differs per class).
+    $("#taskName").textContent = `DAY ${EVENT.competitionDay}`;
+    if(merged){
+      // merged classes may have different distances — show a range or "MIXED"
+      const dists = [...new Set(mergeSet.map(c=>TASKS[c]?.distanceKm).filter(Boolean))];
+      $("#taskDist").textContent = dists.length===1 ? dists[0]+" km" : "MIXED TASKS";
+    } else {
+      const d = TASKS[cycleOrder[current]]?.distanceKm;
+      $("#taskDist").textContent = d ? d+" km" : "—";
+    }
+
+    // rows
+    $("#rows").innerHTML = list.map((p,i) => {
+      const pos = i+1;
+      const isLeader = !p.finished && pos===1;
+      const g = p.finished ? {txt:"FIN", kind:"fin"} : fmtGap(p.tdr - leaderTdr, isLeader);
+
+      const gapStyle =
+        g.kind==="leader" ? `style="color:${accent}" class="font-data-mono text-mini font-bold"` :
+        g.kind==="amber"  ? `class="font-data-mono text-mini text-amber-accent font-bold"` :
+        g.kind==="fin"    ? `class="font-data-mono text-mini text-white/35"` :
+                            `class="font-data-mono text-mini text-on-surface"`;
+
+      const posStyle = isLeader ? `style="color:${accent}"` : ``;
+      const posClass = isLeader ? `font-data-mono text-pos text-center` : `font-data-mono text-pos text-primary text-center`;
+
+      const chip = merged
+        ? `<div class="w-[30px] h-[15px] flex items-center justify-center text-[9px] font-extrabold mx-1 shrink-0"
+                style="background:${CLASS[p.cls].color};color:${p.cls==='CLUB'?'#000':'#fff'}">${p.cls}</div>`
+        : ``;
+
+      return `
+        <div class="h-[40px] flex items-center px-2 ${i%2?'row-alt':'row-base'} border-b border-f1-divider relative">
+          ${isLeader?`<div class="absolute left-0 top-0 bottom-0 w-[3px]" style="background:${accent}"></div>`:``}
+          <div class="w-[28px] ${posClass}" ${posStyle}>${pos}</div>
+          ${chip}
+          <div class="w-[16px] flex justify-center mx-1 shrink-0"><div class="w-[10px] h-[10px] rounded-full" style="background:${p.livery}"></div></div>
+          <div class="flex-1 pl-1 truncate flex items-baseline gap-1.5 ${p.finished?'text-white/45':''}">
+            <span class="font-header-uppercase comp-id ${p.finished?'text-white/45':'text-primary'} truncate">${p.name}</span>
+            <span class="font-data-mono text-[10px] ${p.finished?'text-white/30':'text-on-surface-variant'} shrink-0">·&nbsp;${p.id}</span>
+          </div>
+          <div ${gapStyle}>${g.txt}</div>
+        </div>`;
+    }).join("");
+
+    if(animate){ const r=$("#rows"); r.classList.remove("rows-swap"); void r.offsetWidth; r.classList.add("rows-swap"); }
+  }
+
+  function cycle(){
+    if(merged) return;
+    const el = $("#className");
+    el.classList.add("lbl-out");
+    setTimeout(()=>{
+      current = (current+1) % cycleOrder.length;
+      render(true);
+      el.classList.remove("lbl-out"); el.classList.add("lbl-in");
+      setTimeout(()=>el.classList.remove("lbl-in"), 340);
+    }, 300);
+  }
+
+  $("#btnCycle").addEventListener("click", cycle);
+  $("#btnMerge").addEventListener("click", ()=>{ merged=!merged; render(true); });
+
+  function fit(){
+    const s = Math.min(window.innerWidth/1920, window.innerHeight/1080);
+    $("#stage").style.transform = `scale(${s})`;
+  }
+  window.addEventListener("resize", fit); fit();
+
+  chooseLogo();
+  render(false);
+  setInterval(cycle, 12000);   // broadcast auto-cycle; comment out for static
+
+  // ---- live data feed (tracker.html → 'cbs_overlays') -------------
+  // Replaces the sample FIELDS / TASKS with computed task-distance-
+  // remaining for every pilot in every class.  We preserve the
+  // operator's chosen view (cycle position / merged) across updates —
+  // an update mid-cycle just refreshes the numbers in place; it never
+  // jumps the tower to a different class.
+  try {
+    const bc = new BroadcastChannel('cbs_overlays');
+    bc.onmessage = (e) => {
+      const m = e.data;
+      if (!m || m.type !== 'leaderboard') return;
+
+      // Re-key each class group into the tower's CLASS registry slot
+      const nextFields = {};
+      for (const rawCls of Object.keys(m.classes || {})) {
+        const key = normaliseClassKey(rawCls);
+        if (!key) continue;
+        // If the tower doesn't know this class, register a fallback entry
+        // so the label/colour code never crashes on an unmapped class.
+        if (!CLASS[key]) {
+          CLASS[key] = { label: rawCls.toUpperCase(), color: '#9aa0a6' };
+        }
+        nextFields[key] = m.classes[rawCls];
+      }
+      FIELDS = nextFields;
+
+      // Per-class task distance (rounded km from the tracker)
+      const nextTasks = {};
+      for (const rawCls of Object.keys(m.taskDists || {})) {
+        const key = normaliseClassKey(rawCls);
+        if (key) nextTasks[key] = { distanceKm: m.taskDists[rawCls] };
+      }
+      TASKS = nextTasks;
+
+      if (m.competitionDay) EVENT.competitionDay = m.competitionDay;
+
+      // Cycle through whatever classes the tracker reports, preserving
+      // the operator's relative position so the view doesn't jump on
+      // every refresh.
+      const liveClasses = Object.keys(FIELDS);
+      if (liveClasses.length) {
+        const prevCls = cycleOrder[current];
+        cycleOrder = liveClasses;
+        mergeSet   = liveClasses.slice();   // merged view spans every live class
+        const newIdx = cycleOrder.indexOf(prevCls);
+        current = newIdx >= 0 ? newIdx : (current % cycleOrder.length);
+      }
+
+      render(false);
+    };
+  } catch (err) { console.warn('overlay bus unavailable', err); }
+})();
+</script>
+</body>
+</html>

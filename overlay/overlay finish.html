@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overlay - Finish</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { background: transparent; margin: 0; padding: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+  .skew-x-10   { transform: skewX(-10deg); }
+  .unskew-x-10 { transform: skewX(10deg); }
+  .broadcast-dark { background-color: rgba(13, 13, 13, 0.94); }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* Checkered flag block — 5×5 px squares, alternating black/white */
+  .checker {
+    background-image:
+      linear-gradient(45deg, #000 25%, transparent 25%),
+      linear-gradient(-45deg, #000 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #000 75%),
+      linear-gradient(-45deg, transparent 75%, #000 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+    background-color: #fff;
+  }
+
+  /* Card entry — slide up from below with a small overshoot */
+  .stage {
+    opacity: 0; transform: translateY(40px) scale(0.96); pointer-events: none;
+    transition: opacity .45s ease-out, transform .55s cubic-bezier(.18,.89,.32,1.28);
+  }
+  .stage.show { opacity: 1; transform: translateY(0) scale(1); }
+
+  /* The "FINISH" word strobes white→cream so it reads from across a room */
+  @keyframes finishGlow { 0%,100% { color: #fff; text-shadow: 0 0 18px rgba(255,255,255,.7); }
+                          50%     { color: #FFEDA0; text-shadow: 0 0 24px rgba(255,237,160,.95); } }
+  .stage.show .finish-word { animation: finishGlow 1.1s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<!-- Center-bottom hero card.  Bigger and louder than the regular lower-thirds:
+     this is the moment of a pilot crossing the line. -->
+<div id="stage" class="stage fixed inset-0 flex items-end justify-center">
+  <div class="mb-[120px]">
+    <div class="flex items-stretch skew-x-10 overflow-hidden shadow-2xl">
+      <!-- Checkered flag block -->
+      <div class="checker w-[110px]"></div>
+      <!-- Black body -->
+      <div class="broadcast-dark pl-8 pr-12 py-5 flex flex-col gap-2 min-w-[420px]">
+        <div class="unskew-x-10">
+          <div class="finish-word font-black text-[42px] leading-none tracking-[.18em]">FINISH</div>
+          <div class="mt-2 flex items-baseline gap-3">
+            <span id="name" class="text-[28px] tracking-tight">Jan <span class="font-bold">NOVAK</span></span>
+            <span id="natCode" class="text-base font-semibold uppercase tracking-wider text-[#c4c7c8]">SLO</span>
+          </div>
+          <div class="mt-1 flex items-baseline gap-3">
+            <span id="cls" class="mono text-[13px] text-[#FFEDA0] uppercase tracking-widest">OPEN CLASS</span>
+            <span class="mono text-[12px] text-[#888]">·</span>
+            <span id="utc" class="mono text-[13px] text-[#c4c7c8]">14:38:21 UTC</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Country code mapping — same lookup table as the other overlay cards so a
+// pilot's flag colour scheme is consistent across the broadcast.
+const NAT = {
+  SLO:'SLO', GER:'GER', AUT:'AUT', ITA:'ITA', FRA:'FRA', HUN:'HUN', CRO:'CRO',
+  CZE:'CZE', POL:'POL', SUI:'SUI', GBR:'GBR', USA:'USA'
+};
+function nationToCode(n) {
+  if (!n) return '';
+  const cleaned = n.replace(/[\p{Emoji}\s]/gu, '').toUpperCase();
+  const map = {
+    SLOVENIA:'SLO', GERMANY:'GER', AUSTRIA:'AUT', ITALY:'ITA', FRANCE:'FRA',
+    HUNGARY:'HUN', CROATIA:'CRO', CZECHIA:'CZE', 'CZECHREPUBLIC':'CZE',
+    POLAND:'POL', SWITZERLAND:'SUI', UNITEDKINGDOM:'GBR', UNITEDSTATES:'USA'
+  };
+  return map[cleaned] || cleaned.slice(0, 3);
+}
+function formatName(full) {
+  if (!full) return { first: '', last: '' };
+  const parts = full.trim().split(/\s+/);
+  const first = parts.slice(0, -1).join(' ') || parts[0];
+  const last  = (parts.length > 1 ? parts[parts.length-1] : '').toUpperCase();
+  return { first, last };
+}
+function utcTimeFromSec(s) {
+  if (!Number.isFinite(s)) return '';
+  const d = new Date(s * 1000);
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const sec = String(d.getUTCSeconds()).padStart(2, '0');
+  return `${h}:${m}:${sec} UTC`;
+}
+
+const _stage = document.getElementById('stage');
+let _hideTimer = null;
+
+function renderEvent(msg) {
+  const p = msg.pilot || {};
+  const { first, last } = formatName(p.name);
+  document.getElementById('name').innerHTML =
+    `${first} <span class="font-bold">${last}</span>`;
+  document.getElementById('natCode').textContent =
+    nationToCode(p.nationality || p.nat);
+  document.getElementById('cls').textContent  = (msg.class || '').toUpperCase() + ' CLASS';
+  document.getElementById('utc').textContent  = utcTimeFromSec(msg.utcSec);
+}
+
+try {
+  const bc = new BroadcastChannel('cbs_overlays');
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'finish' || !m.pilot) return;
+    renderEvent(m);
+    _stage.classList.add('show');
+    clearTimeout(_hideTimer);
+    // Hold longer than the other overlays — this IS the moment.  6 s on
+    // screen, then fade.  Matches the tracker's 12 s director freeze, so
+    // the overlay is gone by the time the camera cycles to the next cut.
+    _hideTimer = setTimeout(() => _stage.classList.remove('show'), 6000);
+  };
+} catch (e) { console.warn('overlay bus unavailable', e); }
+</script>
+</body></html>

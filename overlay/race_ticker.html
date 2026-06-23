@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<!--
+  Championship Broadcast Studio — Race Info Ticker (broadcast overlay)
+  Broadcast overlay layout (Subsystem 6, item 4).
+  Copyright (C) 2026  Championship Broadcast Studio contributors — GPL v3.0.
+
+  Transparent 1920x1080 canvas; ticker pinned bottom-right, consumed by OBS
+  as a Browser Source over the CesiumJS scene. Global event branding only
+  (day, practice/comp, event name, venue) — task/class info lives on the
+  leaderboard tower since those are per-class.
+-->
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Race Ticker — Championship Broadcast Studio</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<script>
+  tailwind.config = { darkMode:"class", theme:{ extend:{
+    colors:{ "broadcast-red":"#E10600","broadcast-gray":"#9A9A9A",
+             "bg-start":"#1A1A1A","bg-end":"#0F0F0F","outline-variant":"#444748","primary":"#ffffff" },
+    fontFamily:{ "body":["Inter"],"mono":["JetBrains Mono"],"header":["Inter"] },
+    boxShadow:{ "glow-red":"0 0 10px rgba(225,6,0,.6),0 0 20px rgba(225,6,0,.3)",
+                "glow-red-line":"0 2px 8px rgba(225,6,0,.8)" }
+  }}}
+</script>
+<style>
+  html,body{ margin:0; padding:0; }
+  body{ font-family:Inter,sans-serif; overflow:hidden; background:transparent; }
+  .skewed{ transform:skewX(-13deg); }
+  .unskewed{ transform:skewX(13deg); }
+
+  /* dev checkerboard so transparency is visible in preview */
+  .checker{
+    background-image:
+      linear-gradient(45deg,#2a2a2a 25%,transparent 25%),linear-gradient(-45deg,#2a2a2a 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#2a2a2a 75%),linear-gradient(-45deg,transparent 75%,#2a2a2a 75%);
+    background-size:24px 24px; background-position:0 0,0 12px,12px -12px,-12px 0;
+  }
+</style>
+</head>
+<body class="checker">
+
+<!-- 1920x1080 stage, scaled to fit preview; exact pixels in OBS -->
+<div id="stage" class="relative w-[1920px] h-[1080px] overflow-hidden" style="transform-origin:top left;">
+
+  <!-- ticker anchored bottom-right -->
+  <div class="absolute bottom-[40px] right-[40px] w-[360px]">
+
+    <!-- main skewed block -->
+    <div class="skewed relative w-full h-[73px] bg-gradient-to-r from-bg-end to-bg-start
+                border border-l-0 border-outline-variant/30 overflow-hidden shadow-2xl flex items-center"
+         style="opacity:.95;">
+      <!-- left red accent bar -->
+      <div class="absolute left-0 top-0 bottom-0 w-[6px] bg-broadcast-red shadow-glow-red z-10"></div>
+      <!-- carved top highlight -->
+      <div class="absolute top-0 left-[6px] right-0 h-px bg-white/5 z-10"></div>
+      <!-- content (un-skewed so text reads straight) -->
+      <div class="unskewed w-full h-full flex flex-col justify-center pl-[26px] pr-[16px] z-20">
+        <div id="tLine1" class="font-mono text-[11px] text-broadcast-gray uppercase tracking-[.15em] font-bold leading-tight mb-0.5">DAY 3 · PRACTICE</div>
+        <div id="tLine2" class="font-header text-[22px] text-primary uppercase font-extrabold tracking-tight leading-none mb-1">SLOVENIAN NATIONALS</div>
+        <div id="tLine3" class="font-mono text-[10px] text-broadcast-gray/80 tracking-wider leading-none">LJMS · MURSKA SOBOTA</div>
+      </div>
+    </div>
+
+    <!-- bottom red slash (single skew, aligned under the block) -->
+    <div class="skewed h-[3px] w-[98%] ml-[4px] mt-[3px] bg-broadcast-red shadow-glow-red-line"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+
+  // ---- event config. At runtime from event_info_panel.html + go-live day-type. ----
+  const EVENT = {
+    competitionDay: 3,
+    dayType: "PRACTICE",          // "PRACTICE" or "COMPETITION"
+    eventName: "SLOVENIAN NATIONALS",
+    icao: "LJMS",
+    airfield: "MURSKA SOBOTA"
+  };
+
+  function apply(){
+    $("#tLine1").textContent = `DAY ${EVENT.competitionDay} · ${EVENT.dayType}`;
+    $("#tLine2").textContent = EVENT.eventName.toUpperCase();
+    $("#tLine3").textContent = `${EVENT.icao} · ${EVENT.airfield.toUpperCase()}`;
+  }
+
+  function fit(){
+    const s = Math.min(window.innerWidth/1920, window.innerHeight/1080);
+    $("#stage").style.transform = `scale(${s})`;
+  }
+  window.addEventListener("resize", fit); fit();
+  apply();
+})();
+</script>
+</body>
+</html>

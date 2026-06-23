@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Championship Broadcast Studio — Pilot Showcase</title>
+
+<!--
+  ============================================================
+  PILOT SHOWCASE OVERLAY — transparent.
+  Used during the PILOT PARADE phase (spec §3, Phase 2) — cycles
+  registered gliders. Also a manual "lineup" graphic for pre-task.
+
+  Stack in OBS above background.html. The media frame INSIDE each
+  card is fully transparent — feed cutout portraits (WebM with alpha
+  or PNG with transparency) and the pilot floats over the bg cleanly.
+
+  URL OPTIONS:
+    pilot_showcase.html                   3 cards (default)
+    pilot_showcase.html?count=2|3|4|5     custom card count
+    pilot_showcase.html?title=...         custom title (URL-encoded)
+    pilot_showcase.html?subtitle=...      custom subtitle
+
+  RUNTIME JS:
+    cbsPilotShowcase.setPilot(0, {position, first, last, country, flag, glider, accent})
+    cbsPilotShowcase.setMedia(0, url)        // image, mp4, or webm
+    cbsPilotShowcase.clearMedia(0)
+    cbsPilotShowcase.setHeader(title, subtitle)
+  ============================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL@24..48,200..600,0..1&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.2.3/css/flag-icons.min.css" />
+
+<style>
+  :root {
+    --line: #2a2a30;
+    --line-soft: #1e1e22;
+    --text-hi: #ffffff;
+    --text-md: #c8c8cf;
+    --text-lo: #8e9192;
+
+    --accent-teal: #14A89C;
+    --accent-teal-glow: rgba(20,168,156,0.55);
+
+    --safe-x: 64px;
+    --safe-y: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1920px; height: 1080px;
+    overflow: hidden;
+    font-family: 'Titillium Web', system-ui, sans-serif;
+    color: var(--text-hi);
+    background: transparent;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 200, 'GRAD' 0, 'opsz' 48;
+    user-select: none;
+  }
+
+  .stage {
+    position: relative;
+    width: 1920px; height: 1080px;
+    padding: var(--safe-y) var(--safe-x) 48px;
+    display: flex; flex-direction: column;
+    align-items: center;
+  }
+
+  /* ============================================================
+     HEADER
+     ============================================================ */
+  .header {
+    text-align: center;
+    margin-bottom: 36px;
+    display: flex; flex-direction: column;
+    align-items: center; gap: 10px;
+  }
+  .header-title {
+    font-size: 16px; font-weight: 700;
+    letter-spacing: 0.4em; text-transform: uppercase;
+    color: var(--text-md);
+    text-shadow: 0 2px 10px rgba(0,0,0,0.75);
+  }
+  .header-rule {
+    width: 120px; height: 3px;
+    background: var(--accent-teal);
+    box-shadow: 0 0 20px var(--accent-teal-glow);
+  }
+
+  /* ============================================================
+     CARD ROW
+     ============================================================ */
+  .row {
+    display: flex;
+    gap: 48px;
+    align-items: flex-end;
+    justify-content: center;
+    flex: 1;
+    padding-top: 8px;
+  }
+
+  /* ============================================================
+     PILOT CARD
+     ============================================================ */
+  .card {
+    width: 360px;
+    display: flex; flex-direction: column;
+    align-items: stretch;
+    /* Per-pilot accent — overridden inline by setPilot({accent}).
+       Defaults to event teal so a card without a livery still looks right. */
+    --accent: #14A89C;
+    --accent-glow: rgba(20,168,156,0.55);
+    --accent-text: #ffffff;
+  }
+
+  /* --- Portrait media frame --- */
+  .media-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 2 / 3;            /* portrait — 360 × 540 */
+    /* SUBTLE substrate so the empty frame is visible against any bg.
+       Removed entirely when media is loaded so cutout portraits float clean. */
+    background: rgba(13,13,13,0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    transition: background 280ms ease, backdrop-filter 280ms ease;
+  }
+  .card.has-media .media-frame {
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /* --- Corner brackets (always visible — frame the portrait) --- */
+  .corner {
+    position: absolute;
+    width: 26px; height: 26px;
+    border-color: var(--accent-teal);
+    border-style: solid;
+    box-shadow: 0 0 12px var(--accent-teal-glow);
+    pointer-events: none;
+  }
+  .corner.tl { top: 0; left: 0;   border-width: 2px 0 0 2px; }
+  .corner.tr { top: 0; right: 0;  border-width: 2px 2px 0 0; }
+  .corner.bl { bottom: 0; left: 0;  border-width: 0 0 2px 2px; }
+  .corner.br { bottom: 0; right: 0; border-width: 0 2px 2px 0; }
+
+  /* --- Placeholder (hidden when media is loaded) --- */
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px;
+    color: var(--text-lo);
+    pointer-events: none;
+    transition: opacity 220ms ease;
+  }
+  .placeholder .ph-icon {
+    font-size: 64px !important;
+    opacity: 0.55;
+  }
+  .placeholder .ph-label {
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.36em; text-transform: uppercase;
+    opacity: 0.6;
+  }
+  .card.has-media .placeholder { opacity: 0; }
+
+  /* --- Media content slot --- */
+  .media-content {
+    position: absolute; inset: 0;
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  .media-content > img,
+  .media-content > video {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto; height: auto;
+    object-fit: contain;
+    object-position: bottom center;     /* anchor head/body, like real portrait shots */
+    display: block;
+  }
+
+  /* ============================================================
+     NAME BAR — F1-style skewed parallelogram
+     ============================================================ */
+  .name-bar {
+    margin-top: -14px;                  /* slight overlap into the portrait */
+    position: relative;
+    z-index: 2;
+    display: flex; align-items: stretch;
+    transform: skewX(-10deg);
+    overflow: hidden;
+    box-shadow:
+      0 6px 20px rgba(0,0,0,0.6),
+      0 2px 0 0 var(--accent),         /* fake bottom-border that follows the skew */
+      0 4px 18px -4px var(--accent-glow);
+  }
+  .name-bar > * { transform: skewX(0deg); }   /* parent skew already applies */
+
+  .pos-block {
+    background: var(--accent);
+    width: 56px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 240ms ease;
+  }
+  .pos-block-num {
+    display: inline-block;
+    transform: skewX(10deg);
+    font-size: 28px; font-weight: 900;
+    color: var(--accent-text);
+    font-style: italic;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  .name-block {
+    flex: 1;
+    background: rgba(13,13,13,0.92);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    padding: 10px 28px 10px 18px;
+    display: flex; align-items: center;
+    gap: 14px;
+  }
+  .name-inner {
+    transform: skewX(10deg);
+    display: flex; align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .name-flag {
+    width: 26px; height: 19px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+    flex: 0 0 auto;
+  }
+  .name-text {
+    display: flex; flex-direction: column;
+    gap: 2px; min-width: 0;
+  }
+  .name-row1 {
+    display: flex; align-items: baseline; gap: 8px;
+    line-height: 1.05;
+  }
+  .first {
+    font-size: 18px; font-weight: 400;
+    color: var(--text-md);
+  }
+  .last {
+    font-size: 18px; font-weight: 900;
+    color: var(--text-hi);
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+  }
+  .country {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.16em;
+    color: var(--text-lo);
+    margin-left: 2px;
+  }
+  .glider {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 500;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-lo);
+  }
+  .glider .key {
+    color: var(--text-lo);
+    opacity: 0.6;
+    margin-right: 6px;
+  }
+
+  /* ============================================================
+     FOOTER
+     ============================================================ */
+  .footer {
+    margin-top: 32px;
+    text-align: center;
+  }
+  .watermark {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.28em; text-transform: uppercase;
+    color: var(--text-lo);
+    opacity: 0.65;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
+  }
+
+  /* ============================================================
+     COUNT VARIATIONS — keep cards readable when shrinking
+     ============================================================ */
+  body.count-2 .card { width: 420px; }
+  body.count-4 .card { width: 320px; }
+  body.count-4 .row  { gap: 32px; }
+  body.count-5 .card { width: 280px; }
+  body.count-5 .row  { gap: 24px; }
+  body.count-5 .last, body.count-5 .first { font-size: 16px; }
+  body.count-5 .pos-block { width: 48px; }
+  body.count-5 .pos-block-num { font-size: 24px; }
+
+  /* ============================================================
+     ENTRY ANIMATION (subtle — broadcast graphics should be calm)
+     ============================================================ */
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .card { animation: card-in 560ms ease-out both; }
+  .card:nth-child(2) { animation-delay: 80ms; }
+  .card:nth-child(3) { animation-delay: 160ms; }
+  .card:nth-child(4) { animation-delay: 240ms; }
+  .card:nth-child(5) { animation-delay: 320ms; }
+</style>
+</head>
+<body class="count-3">
+<div class="stage">
+
+  <!-- ============ HEADER ============ -->
+  <header class="header">
+    <div class="header-title" id="header-title">Pilots &nbsp;·&nbsp; 18-Metre &nbsp;·&nbsp; Day 3</div>
+    <div class="header-rule"></div>
+  </header>
+
+  <!-- ============ CARD ROW ============ -->
+  <div class="row" id="card-row">
+
+    <!-- Card 1 -->
+    <div class="card" data-slot="0">
+      <div class="media-frame">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="placeholder">
+          <span class="material-symbols-outlined ph-icon">person</span>
+          <span class="ph-label">Pilot Media</span>
+        </div>
+        <div class="media-content"></div>
+      </div>
+      <div class="name-bar">
+        <div class="pos-block"><span class="pos-block-num" data-field="position">1</span></div>
+        <div class="name-block">
+          <div class="name-inner">
+            <span class="fi fi-si name-flag" data-field="flag" aria-label="Slovenia"></span>
+            <div class="name-text">
+              <div class="name-row1">
+                <span class="first" data-field="first">Jan</span><span class="last" data-field="last">Novak</span><span class="country" data-field="country">SLO</span>
+              </div>
+              <div class="glider"><span class="key">Glider</span><span data-field="glider">ASG-29 · JS1</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2 -->
+    <div class="card" data-slot="1">
+      <div class="media-frame">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="placeholder">
+          <span class="material-symbols-outlined ph-icon">person</span>
+          <span class="ph-label">Pilot Media</span>
+        </div>
+        <div class="media-content"></div>
+      </div>
+      <div class="name-bar">
+        <div class="pos-block"><span class="pos-block-num" data-field="position">2</span></div>
+        <div class="name-block">
+          <div class="name-inner">
+            <span class="fi fi-de name-flag" data-field="flag" aria-label="Germany"></span>
+            <div class="name-text">
+              <div class="name-row1">
+                <span class="first" data-field="first">Marco</span><span class="last" data-field="last">Schmidt</span><span class="country" data-field="country">GER</span>
+              </div>
+              <div class="glider"><span class="key">Glider</span><span data-field="glider">Ventus 3 · X5</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 3 -->
+    <div class="card" data-slot="2">
+      <div class="media-frame">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="placeholder">
+          <span class="material-symbols-outlined ph-icon">person</span>
+          <span class="ph-label">Pilot Media</span>
+        </div>
+        <div class="media-content"></div>
+      </div>
+      <div class="name-bar">
+        <div class="pos-block"><span class="pos-block-num" data-field="position">3</span></div>
+        <div class="name-block">
+          <div class="name-inner">
+            <span class="fi fi-fr name-flag" data-field="flag" aria-label="France"></span>
+            <div class="name-text">
+              <div class="name-row1">
+                <span class="first" data-field="first">Pierre</span><span class="last" data-field="last">Durand</span><span class="country" data-field="country">FRA</span>
+              </div>
+              <div class="glider"><span class="key">Glider</span><span data-field="glider">JS3 · GM</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ FOOTER ============ -->
+  <div class="footer">
+    <div class="watermark">Championship Broadcast Studio</div>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    const params = new URLSearchParams(location.search);
+    const row    = document.getElementById('card-row');
+    const titleEl = document.getElementById('header-title');
+
+    // ---- Count ----
+    const requested = parseInt(params.get('count') || '3', 10);
+    const count = Math.max(2, Math.min(5, isNaN(requested) ? 3 : requested));
+    applyCount(count);
+
+    // ---- Header ----
+    if (params.get('title') || params.get('subtitle')) {
+      setHeader(params.get('title') || 'Pilots', params.get('subtitle') || '');
+    }
+
+    function applyCount(n) {
+      document.body.classList.remove('count-2','count-3','count-4','count-5');
+      document.body.classList.add('count-' + n);
+      const cards = Array.from(row.querySelectorAll('.card'));
+      // Trim excess
+      while (cards.length > n) {
+        const c = cards.pop();
+        c.remove();
+      }
+      // Clone to grow
+      while (cards.length < n) {
+        const last = row.lastElementChild;
+        const clone = last.cloneNode(true);
+        clone.dataset.slot = String(cards.length);
+        // Reset placeholder state on clone
+        clone.classList.remove('has-media');
+        clone.querySelector('.media-content').innerHTML = '';
+        // Increment displayed position
+        const newPos = cards.length + 1;
+        clone.querySelector('[data-field="position"]').textContent = String(newPos);
+        row.appendChild(clone);
+        cards.push(clone);
+      }
+    }
+
+    function setHeader(title, subtitle) {
+      const joined = subtitle
+        ? `${title}\u00A0\u00A0·\u00A0\u00A0${subtitle}`
+        : title;
+      titleEl.textContent = joined;
+    }
+
+    function getCard(slot) {
+      return row.querySelector(`.card[data-slot="${slot}"]`);
+    }
+
+    function setPilot(slot, data) {
+      const card = getCard(slot);
+      if (!card || !data) return;
+      const set = (field, val) => {
+        const el = card.querySelector(`[data-field="${field}"]`);
+        if (el && val != null) el.textContent = val;
+      };
+      if (data.position != null) set('position', data.position);
+      if (data.first    != null) set('first',    data.first);
+      if (data.last     != null) set('last',     data.last);
+      if (data.country  != null) set('country',  data.country);
+      if (data.glider   != null) set('glider',   data.glider);
+      // Flag — replace the fi-XX class on the flag element
+      if (data.flag) {
+        const flagEl = card.querySelector('.name-flag');
+        if (flagEl) {
+          flagEl.className = flagEl.className.replace(/\bfi-[a-z]{2}\b/, '').trim();
+          flagEl.classList.add('fi-' + data.flag.toLowerCase());
+          if (!flagEl.classList.contains('fi')) flagEl.classList.add('fi');
+          flagEl.setAttribute('aria-label', data.country || data.flag);
+        }
+      }
+      // Accent — per-pilot livery color, drives pos block + bottom stripe + glow
+      if (data.accent) setCardAccent(card, data.accent);
+    }
+
+    // Compute glow + contrast text color from a hex accent
+    function setCardAccent(card, hex) {
+      if (typeof hex !== 'string' || !/^#?[0-9a-f]{3,8}$/i.test(hex)) return;
+      const clean = hex.startsWith('#') ? hex : '#' + hex;
+      const h = clean.slice(1);
+      const v = h.length === 3 ? h.split('').map(c => c + c).join('') : h.padEnd(6, '0');
+      const n = parseInt(v.slice(0, 6), 16);
+      const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      const ch = c => { const s = c/255; return s <= 0.03928 ? s/12.92 : Math.pow((s+0.055)/1.055, 2.4); };
+      const lum = 0.2126*ch(r) + 0.7152*ch(g) + 0.0722*ch(b);
+      card.style.setProperty('--accent',      clean);
+      card.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.55)`);
+      card.style.setProperty('--accent-text', lum > 0.55 ? '#0a0a0b' : '#ffffff');
+    }
+
+    function setMedia(slot, url) {
+      const card = getCard(slot);
+      if (!card || !url) return;
+      const container = card.querySelector('.media-content');
+      container.innerHTML = '';
+
+      const lower = url.toLowerCase();
+      const isVideo = /\.(mp4|webm|mov|m4v)(\?|$)/.test(lower) || lower.startsWith('blob:');
+      let el;
+      if (isVideo) {
+        el = document.createElement('video');
+        el.src = url;
+        el.autoplay = true;
+        el.loop = true;
+        el.muted = true;
+        el.playsInline = true;
+      } else {
+        el = document.createElement('img');
+        el.src = url;
+        el.alt = '';
+      }
+      container.appendChild(el);
+      card.classList.add('has-media');
+    }
+
+    function clearMedia(slot) {
+      const card = getCard(slot);
+      if (!card) return;
+      card.querySelector('.media-content').innerHTML = '';
+      card.classList.remove('has-media');
+    }
+
+    // ---- Live updates from event_info_panel.html / auto-director ----
+    if (window.BroadcastChannel) {
+      try {
+        const ch = new BroadcastChannel('cbs');
+        ch.onmessage = (ev) => {
+          const m = ev.data || {};
+          if (m.type === 'pilot-showcase-set' && m.slot != null) setPilot(m.slot, m.data);
+          if (m.type === 'pilot-showcase-media' && m.slot != null) setMedia(m.slot, m.url);
+          if (m.type === 'pilot-showcase-clear-media' && m.slot != null) clearMedia(m.slot);
+          if (m.type === 'pilot-showcase-header') setHeader(m.title, m.subtitle);
+          if (m.type === 'pilot-showcase-count') applyCount(m.value);
+        };
+      } catch (e) {}
+    }
+
+    window.cbsPilotShowcase = {
+      setPilot, setMedia, clearMedia, setHeader,
+      setCount: applyCount
+    };
+  })();
+</script>
+</body>
+</html>

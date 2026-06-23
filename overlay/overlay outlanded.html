@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overlay - Outlanded</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { background: transparent; margin: 0; padding: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+  .skew-x-10   { transform: skewX(-10deg); }
+  .unskew-x-10 { transform: skewX(10deg); }
+  .broadcast-dark { background-color: rgba(13, 13, 13, 0.94); }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  /* Muted earth tone — outlanding is a sad story, not a celebration */
+  .accent          { background-color: #C66A2C; }
+  .border-b-accent { border-bottom: 3px solid #C66A2C; }
+  .glow-accent     { box-shadow: 0 2px 10px -2px #C66A2C; }
+  .stage { opacity: 0; transform: translateY(20px); pointer-events: none;
+           transition: opacity .4s ease-out, transform .4s ease-out; }
+  .stage.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+<!-- Bottom-right card — same slot the FAST LEG uses, never both at once. -->
+<div id="stage" class="stage fixed inset-0 flex items-end justify-end">
+  <div class="mr-[80px] mb-[80px]">
+    <div class="flex items-stretch skew-x-10 border-b-accent glow-accent overflow-hidden">
+      <div class="accent px-3 py-3 flex items-center">
+        <span class="unskew-x-10 mono text-[11px] font-bold tracking-[0.25em] text-black">OUTLANDED</span>
+      </div>
+      <div class="broadcast-dark pl-6 pr-12 py-3 flex flex-col justify-center min-w-[320px]">
+        <div class="unskew-x-10 flex flex-col gap-1">
+          <div class="flex items-baseline gap-2">
+            <span id="name"    class="text-xl tracking-tight">Jan <span class="font-bold">NOVAK</span></span>
+            <span id="natCode" class="text-sm font-semibold uppercase tracking-wider text-[#c4c7c8]">SLO</span>
+          </div>
+          <div id="meta" class="mono text-[12px] text-[#c4c7c8]">OPEN class &middot; 47 km from home</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function formatName(full) {
+  if (!full) return { first: '', last: '' };
+  const parts = full.trim().split(/\s+/);
+  return {
+    first: parts.slice(0, -1).join(' ') || parts[0],
+    last:  (parts.length > 1 ? parts[parts.length-1] : '').toUpperCase()
+  };
+}
+function nationToCode(n) {
+  if (!n) return '';
+  const cleaned = n.replace(/[\p{Emoji}\s]/gu, '').toUpperCase();
+  const map = {
+    SLOVENIA:'SLO', GERMANY:'GER', AUSTRIA:'AUT', ITALY:'ITA', FRANCE:'FRA',
+    HUNGARY:'HUN', CROATIA:'CRO', CZECHIA:'CZE', 'CZECHREPUBLIC':'CZE',
+    POLAND:'POL', SWITZERLAND:'SUI', UNITEDKINGDOM:'GBR', UNITEDSTATES:'USA'
+  };
+  return map[cleaned] || cleaned.slice(0, 3);
+}
+
+const _stage = document.getElementById('stage');
+let _hideTimer = null;
+function renderEvent(msg) {
+  const p = msg.pilot || {};
+  const { first, last } = formatName(p.name);
+  document.getElementById('name').innerHTML    = `${first} <span class="font-bold">${last}</span>`;
+  document.getElementById('natCode').textContent = nationToCode(p.nationality || p.nat);
+  const km = Math.round((msg.distHomeM || 0) / 1000);
+  const cls = msg.class || '';
+  document.getElementById('meta').textContent =
+    `${cls ? cls + ' class' : 'task'} \xb7 ${km} km from home`;
+}
+
+try {
+  const bc = new BroadcastChannel('cbs_overlays');
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'outlanded' || !m.pilot) return;
+    renderEvent(m);
+    _stage.classList.add('show');
+    clearTimeout(_hideTimer);
+    _hideTimer = setTimeout(() => _stage.classList.remove('show'), 6000);
+  };
+} catch (e) { console.warn('overlay bus unavailable', e); }
+</script>
+</body></html>

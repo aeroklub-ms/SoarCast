@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Championship Broadcast Studio — Task Showcase</title>
+
+<!--
+  ============================================================
+  TASK SHOWCASE OVERLAY — transparent.
+  Shown during the TASK_VISUALIZER state (spec §1) — before the
+  race, while the camera flies the task with 100× scaled gliders.
+
+  Cycles through tasks for each class, one at a time. The card
+  fades out → swaps data → fades in on each rotation, in sync
+  with the 3D camera's per-class flyover.
+
+  Stack in OBS above background.html (or above the Cesium scene).
+
+  URL OPTIONS:
+    task_showcase.html                          cycle all classes, 8 s each
+    task_showcase.html?interval=12              custom seconds per class
+    task_showcase.html?class=18m                pin to one class (no cycle)
+    task_showcase.html?position=bl|br|tl|tr     card position (default br)
+
+  RUNTIME JS:
+    cbsTaskShowcase.setClasses([{code, name, task: {...}}, ...])
+    cbsTaskShowcase.showClass('18m')
+    cbsTaskShowcase.next() / .prev()
+    cbsTaskShowcase.pause() / .play()
+    cbsTaskShowcase.setInterval(seconds)
+  ============================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    --line: #2a2a30;
+    --line-soft: #1e1e22;
+    --text-hi: #ffffff;
+    --text-md: #c8c8cf;
+    --text-lo: #8e9192;
+
+    --accent-teal: #14A89C;
+    --accent-teal-glow: rgba(20,168,156,0.55);
+
+    --safe: 40px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1920px; height: 1080px;
+    overflow: hidden;
+    font-family: 'Titillium Web', system-ui, sans-serif;
+    color: var(--text-hi);
+    background: transparent;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+
+  .card {
+    position: absolute;
+    width: 460px;
+    background:
+      linear-gradient(180deg, rgba(20,19,19,0.94), rgba(16,16,19,0.94));
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid var(--line);
+    box-shadow:
+      0 24px 60px rgba(0,0,0,0.6),
+      0 0 0 1px rgba(255,255,255,0.02) inset;
+    overflow: hidden;
+    transition: opacity 380ms ease, transform 380ms ease;
+  }
+  body.pos-br .card { bottom: var(--safe); right:  var(--safe); }
+  body.pos-bl .card { bottom: var(--safe); left:   var(--safe); }
+  body.pos-tr .card { top:    var(--safe); right:  var(--safe); }
+  body.pos-tl .card { top:    var(--safe); left:   var(--safe); }
+
+  .card.is-swapping {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  /* ---------- TOP STRIP ---------- */
+  .strip {
+    display: flex; align-items: center;
+    height: 44px;
+    padding: 0 20px;
+    background: rgba(42,42,48,0.7);
+    border-bottom: 1px solid var(--line);
+    border-left: 6px solid var(--accent-teal);
+    box-shadow: 0 0 16px -4px var(--accent-teal-glow);
+    gap: 16px;
+  }
+  .strip-title {
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.28em; text-transform: uppercase;
+    color: var(--text-hi);
+    flex: 1;
+  }
+  .strip-page {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.16em;
+    color: var(--text-lo);
+    font-variant-numeric: tabular-nums;
+  }
+  .strip-page b { color: var(--text-hi); }
+
+  .cycle-bar {
+    position: relative;
+    height: 2px;
+    background: rgba(255,255,255,0.04);
+  }
+  .cycle-bar-fill {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 0%;
+    background: var(--accent-teal);
+    box-shadow: 0 0 12px var(--accent-teal-glow);
+  }
+  body.is-paused .cycle-bar-fill { background: var(--text-lo); box-shadow: none; }
+  body.is-pinned .cycle-bar { display: none; }
+
+  /* ---------- CLASS IDENTIFIER ---------- */
+  .class-id {
+    padding: 22px 24px 10px;
+    display: flex; align-items: flex-end; gap: 16px;
+  }
+  .class-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.22em;
+    color: var(--accent-teal);
+    padding: 4px 9px;
+    border: 1px solid var(--accent-teal);
+    margin-bottom: 6px;
+  }
+  .class-name {
+    font-size: 34px; font-weight: 900;
+    line-height: 1; letter-spacing: -0.01em;
+    text-transform: uppercase;
+    color: var(--text-hi);
+  }
+  .class-day {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--text-lo);
+    margin-left: auto;
+    margin-bottom: 8px;
+  }
+
+  /* ---------- HERO DISTANCE ---------- */
+  .hero {
+    padding: 16px 24px 22px;
+    border-bottom: 1px solid var(--line-soft);
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  .hero-num {
+    font-family: 'Titillium Web', sans-serif;
+    font-size: 64px; font-weight: 900;
+    line-height: 0.9; letter-spacing: -0.02em;
+    color: var(--text-hi);
+    font-variant-numeric: tabular-nums;
+  }
+  .hero-unit {
+    font-size: 22px; font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-md);
+    margin-left: -4px;
+  }
+  .hero-type {
+    margin-left: auto;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.28em; text-transform: uppercase;
+    color: var(--accent-teal);
+    border: 1px solid var(--accent-teal);
+    padding: 5px 10px;
+    align-self: center;
+  }
+
+  /* ---------- STAT ROWS ---------- */
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    display: flex; justify-content: space-between; align-items: center;
+    height: 44px;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .row:last-child { border-bottom: none; }
+  .row-key {
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--text-lo);
+  }
+  .row-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px; font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-hi);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- FOOTER ---------- */
+  .foot {
+    display: flex; align-items: center;
+    padding: 12px 20px;
+    border-top: 1px solid var(--line-soft);
+    background: rgba(10,10,12,0.4);
+    gap: 12px;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    transition: background 200ms ease, transform 200ms ease;
+    cursor: pointer;
+  }
+  .dot.active {
+    background: var(--accent-teal);
+    transform: scale(1.2);
+    box-shadow: 0 0 10px var(--accent-teal-glow);
+  }
+  .foot-next {
+    margin-left: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--text-lo);
+  }
+  .foot-next b { color: var(--text-md); }
+  body.is-pinned .foot-next { display: none; }
+</style>
+</head>
+<body class="pos-br">
+
+  <div class="card" id="card">
+
+    <div class="strip">
+      <div class="strip-title">Task Preview</div>
+      <div class="strip-page">
+        <b id="strip-page-cur">1</b><span> / </span><span id="strip-page-tot">3</span>
+      </div>
+    </div>
+    <div class="cycle-bar"><div class="cycle-bar-fill" id="cycle-fill"></div></div>
+
+    <div class="class-id">
+      <span class="class-code" id="class-code">18M</span>
+      <span class="class-name" id="class-name">18-Metre</span>
+      <span class="class-day" id="class-day">Day 3</span>
+    </div>
+
+    <div class="hero">
+      <span class="hero-num" id="hero-num">312</span>
+      <span class="hero-unit">KM</span>
+      <span class="hero-type" id="hero-type">Racing</span>
+    </div>
+
+    <div class="rows">
+      <div class="row">
+        <span class="row-key">Turnpoints</span>
+        <span class="row-val" id="row-tp">5</span>
+      </div>
+      <div class="row">
+        <span class="row-key">Start Window</span>
+        <span class="row-val" id="row-start">11:00 – 13:00</span>
+      </div>
+      <div class="row">
+        <span class="row-key">Min Finish Height</span>
+        <span class="row-val" id="row-min">300 m AGL</span>
+      </div>
+    </div>
+
+    <div class="foot">
+      <div class="dots" id="dots"></div>
+      <div class="foot-next">
+        Next &nbsp;·&nbsp; <b id="foot-next-name">Standard</b>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+  (function () {
+    // DEFAULT CLASS DATA — replace via cbsTaskShowcase.setClasses([...])
+    let classes = [
+      { code: '18M', name: '18-Metre', day: 'Day 3',
+        task: { type: 'Racing', distanceKm: 312, turnpoints: 5,
+                startWindow: '11:00 – 13:00', minFinish: '300 m AGL' } },
+      { code: 'STD', name: 'Standard', day: 'Day 3',
+        task: { type: 'AAT', distanceKm: 268, turnpoints: 4,
+                startWindow: '11:15 – 13:15', minFinish: '300 m AGL' } },
+      { code: 'CLB', name: 'Club', day: 'Day 3',
+        task: { type: 'Racing', distanceKm: 215, turnpoints: 4,
+                startWindow: '11:30 – 13:30', minFinish: '300 m AGL' } }
+    ];
+
+    let currentIdx  = 0;
+    let intervalMs  = 8000;
+    let pinned      = false;
+    let paused      = false;
+    let timer       = null;
+    let cycleStart  = 0;
+    let raf         = null;
+
+    const card        = document.getElementById('card');
+    const stripCur    = document.getElementById('strip-page-cur');
+    const stripTot    = document.getElementById('strip-page-tot');
+    const cycleFill   = document.getElementById('cycle-fill');
+    const classCode   = document.getElementById('class-code');
+    const className   = document.getElementById('class-name');
+    const classDay    = document.getElementById('class-day');
+    const heroNum     = document.getElementById('hero-num');
+    const heroType    = document.getElementById('hero-type');
+    const rowTp       = document.getElementById('row-tp');
+    const rowStart    = document.getElementById('row-start');
+    const rowMin      = document.getElementById('row-min');
+    const dotsEl      = document.getElementById('dots');
+    const footNextEl  = document.getElementById('foot-next-name');
+
+    // URL params
+    const params = new URLSearchParams(location.search);
+
+    const pos = (params.get('position') || 'br').toLowerCase();
+    if (['br','bl','tr','tl'].includes(pos)) {
+      document.body.classList.remove('pos-br','pos-bl','pos-tr','pos-tl');
+      document.body.classList.add('pos-' + pos);
+    }
+
+    const intervalParam = parseInt(params.get('interval') || '8', 10);
+    if (!isNaN(intervalParam) && intervalParam >= 3 && intervalParam <= 60) {
+      intervalMs = intervalParam * 1000;
+    }
+
+    const pinParam = (params.get('class') || '').toLowerCase();
+    if (pinParam) {
+      const idx = classes.findIndex(c => c.code.toLowerCase() === pinParam);
+      if (idx >= 0) {
+        pinned = true;
+        currentIdx = idx;
+        document.body.classList.add('is-pinned');
+      }
+    }
+
+    function buildDots() {
+      dotsEl.innerHTML = '';
+      classes.forEach((_, i) => {
+        const d = document.createElement('div');
+        d.className = 'dot' + (i === currentIdx ? ' active' : '');
+        d.addEventListener('click', () => showClass(classes[i].code));
+        dotsEl.appendChild(d);
+      });
+    }
+
+    function render() {
+      const c = classes[currentIdx];
+      if (!c) return;
+      classCode.textContent = c.code;
+      className.textContent = c.name;
+      classDay.textContent  = c.day || '';
+      heroNum.textContent   = String(c.task.distanceKm);
+      heroType.textContent  = c.task.type || '';
+      rowTp.textContent     = String(c.task.turnpoints);
+      rowStart.textContent  = c.task.startWindow || '–';
+      rowMin.textContent    = c.task.minFinish || '–';
+
+      stripCur.textContent  = String(currentIdx + 1);
+      stripTot.textContent  = String(classes.length);
+
+      Array.from(dotsEl.children).forEach((d, i) => {
+        d.classList.toggle('active', i === currentIdx);
+      });
+
+      const nextIdx = (currentIdx + 1) % classes.length;
+      footNextEl.textContent = classes[nextIdx] ? classes[nextIdx].name : '';
+    }
+
+    function swapTo(newIdx, opts) {
+      opts = opts || {};
+      if (newIdx === currentIdx && !opts.force) return;
+      card.classList.add('is-swapping');
+      setTimeout(() => {
+        currentIdx = newIdx;
+        render();
+        card.classList.remove('is-swapping');
+        resetCycle();
+      }, 380);
+    }
+
+    function tickProgress() {
+      if (paused || pinned) {
+        raf = requestAnimationFrame(tickProgress);
+        return;
+      }
+      const elapsed = performance.now() - cycleStart;
+      const pct = Math.min(100, (elapsed / intervalMs) * 100);
+      cycleFill.style.width = pct + '%';
+      raf = requestAnimationFrame(tickProgress);
+    }
+
+    function resetCycle() {
+      cycleStart = performance.now();
+      cycleFill.style.width = '0%';
+      if (timer) clearTimeout(timer);
+      if (pinned || paused || classes.length < 2) return;
+      timer = setTimeout(() => {
+        swapTo((currentIdx + 1) % classes.length);
+      }, intervalMs);
+    }
+
+    // Public API
+    function setClasses(list) {
+      if (!Array.isArray(list) || list.length === 0) return;
+      classes = list;
+      currentIdx = Math.min(currentIdx, classes.length - 1);
+      buildDots();
+      render();
+      resetCycle();
+    }
+    function showClass(code) {
+      const idx = classes.findIndex(c => c.code.toLowerCase() === String(code).toLowerCase());
+      if (idx >= 0) swapTo(idx);
+    }
+    function next() { swapTo((currentIdx + 1) % classes.length); }
+    function prev() { swapTo((currentIdx - 1 + classes.length) % classes.length); }
+    function pause() { paused = true; document.body.classList.add('is-paused'); if (timer) clearTimeout(timer); }
+    function play()  { paused = false; document.body.classList.remove('is-paused'); resetCycle(); }
+    function setIntervalSec(seconds) {
+      if (typeof seconds !== 'number' || seconds < 3) return;
+      intervalMs = seconds * 1000;
+      resetCycle();
+    }
+
+    // BroadcastChannel
+    if (window.BroadcastChannel) {
+      try {
+        const ch = new BroadcastChannel('cbs');
+        ch.onmessage = (ev) => {
+          const m = ev.data || {};
+          if (m.type === 'task-showcase-set-classes' && Array.isArray(m.classes)) setClasses(m.classes);
+          if (m.type === 'task-showcase-show'        && m.code)   showClass(m.code);
+          if (m.type === 'task-showcase-next')                    next();
+          if (m.type === 'task-showcase-prev')                    prev();
+          if (m.type === 'task-showcase-pause')                   pause();
+          if (m.type === 'task-showcase-play')                    play();
+          if (m.type === 'task-showcase-interval' && m.seconds)   setIntervalSec(m.seconds);
+        };
+      } catch (e) {}
+    }
+
+    // Init
+    buildDots();
+    render();
+    resetCycle();
+    raf = requestAnimationFrame(tickProgress);
+
+    window.cbsTaskShowcase = {
+      setClasses, showClass, next, prev, pause, play,
+      setInterval: setIntervalSec
+    };
+  })();
+</script>
+</body>
+</html>

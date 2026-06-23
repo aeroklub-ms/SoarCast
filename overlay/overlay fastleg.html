@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overlay - Fast Leg</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { background: transparent; margin: 0; padding: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+  .skew-x-10   { transform: skewX(-10deg); }
+  .unskew-x-10 { transform: skewX(10deg); }
+  .broadcast-dark { background-color: rgba(13, 13, 13, 0.94); }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .accent { background-color: #E0A92F; }
+  .border-b-accent { border-bottom: 3px solid #E0A92F; }
+  .glow-accent { box-shadow: 0 2px 10px -2px #E0A92F; }
+  .stage { opacity: 0; transform: translateX(40px); pointer-events: none;
+           transition: opacity .35s ease-out, transform .35s ease-out; }
+  .stage.show { opacity: 1; transform: translateX(0); }
+  @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .stage.show .blink { animation: flash 0.9s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<!-- Bottom-right card.  Smaller than the FINISH hero (this happens 5-10× per
+     race day), but distinctive enough to register against the leaderboard. -->
+<div id="stage" class="stage fixed inset-0 flex items-end justify-end">
+  <div class="mr-[80px] mb-[300px]">
+    <div class="flex items-stretch skew-x-10 border-b-accent glow-accent overflow-hidden">
+      <div class="accent blink px-3 py-2 flex items-center">
+        <span class="unskew-x-10 mono text-[10px] font-bold tracking-[0.22em] text-black">FAST LEG</span>
+      </div>
+      <div class="broadcast-dark pl-5 pr-9 py-2 flex flex-col justify-center min-w-[260px]">
+        <div class="unskew-x-10 flex flex-col gap-0.5">
+          <div class="flex items-baseline gap-2">
+            <span id="name"     class="text-lg tracking-tight">Jan <span class="font-bold">NOVAK</span></span>
+            <span id="natCode"  class="text-xs font-semibold uppercase tracking-wider text-[#c4c7c8]">SLO</span>
+          </div>
+          <div class="flex items-baseline gap-3">
+            <span id="cls"  class="mono text-[11px] text-[#FFEDA0] uppercase tracking-widest">OPEN</span>
+            <span class="mono text-[11px] text-[#888]">·</span>
+            <span id="leg"  class="mono text-[11px] text-[#c4c7c8]">LEG 3→4</span>
+          </div>
+          <div class="flex items-baseline gap-2 mt-0.5">
+            <span id="time" class="mono text-[14px] font-bold text-white">12:34</span>
+            <span id="delta"class="mono text-[11px] text-[#88dd66]">-0:42</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function formatName(full) {
+  if (!full) return { first: '', last: '' };
+  const parts = full.trim().split(/\s+/);
+  return {
+    first: parts.slice(0, -1).join(' ') || parts[0],
+    last:  (parts.length > 1 ? parts[parts.length-1] : '').toUpperCase()
+  };
+}
+function nationToCode(n) {
+  if (!n) return '';
+  const cleaned = n.replace(/[\p{Emoji}\s]/gu, '').toUpperCase();
+  const map = {
+    SLOVENIA:'SLO', GERMANY:'GER', AUSTRIA:'AUT', ITALY:'ITA', FRANCE:'FRA',
+    HUNGARY:'HUN', CROATIA:'CRO', CZECHIA:'CZE', 'CZECHREPUBLIC':'CZE',
+    POLAND:'POL', SWITZERLAND:'SUI', UNITEDKINGDOM:'GBR', UNITEDSTATES:'USA'
+  };
+  return map[cleaned] || cleaned.slice(0, 3);
+}
+function fmtSec(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${m}:${String(s).padStart(2,'0')}`;
+}
+
+const _stage = document.getElementById('stage');
+let _hideTimer = null;
+function renderEvent(msg) {
+  const p = msg.pilot || {};
+  const { first, last } = formatName(p.name);
+  document.getElementById('name').innerHTML    = `${first} <span class="font-bold">${last}</span>`;
+  document.getElementById('natCode').textContent = nationToCode(p.nationality || p.nat);
+  document.getElementById('cls').textContent   = (msg.class || '').toUpperCase();
+  document.getElementById('leg').textContent   = 'LEG ' + (msg.legKey || '').replace('->', '→');
+  document.getElementById('time').textContent  = fmtSec(msg.legSec);
+  // Delta from previous best: negative number, in M:SS, green
+  if (Number.isFinite(msg.previousSec) && Number.isFinite(msg.legSec)) {
+    const delta = msg.legSec - msg.previousSec;   // negative since faster
+    document.getElementById('delta').textContent =
+      (delta < 0 ? '-' : '+') + fmtSec(Math.abs(delta));
+  } else {
+    document.getElementById('delta').textContent = '';
+  }
+}
+
+try {
+  const bc = new BroadcastChannel('cbs_overlays');
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'fast_leg' || !m.pilot) return;
+    renderEvent(m);
+    _stage.classList.add('show');
+    clearTimeout(_hideTimer);
+    _hideTimer = setTimeout(() => _stage.classList.remove('show'), 5000);
+  };
+} catch (e) { console.warn('overlay bus unavailable', e); }
+</script>
+</body></html>

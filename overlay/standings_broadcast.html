@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Championship Broadcast Studio — Daily Standings</title>
+
+<!--
+  ============================================================
+  DAILY STANDINGS OVERLAY — transparent.
+  Stack in OBS below an overlay, above either background.html
+  or a live video feed.
+  USAGE:
+    standings_broadcast.html                  FAI scoring (default)
+    standings_broadcast.html?scoring=spg      SPG scoring (1-10 pts/day)
+  Live-syncs with event_info_panel.html via BroadcastChannel('cbs').
+  ============================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.2.3/css/flag-icons.min.css" />
+
+<style>
+  :root {
+    --line: #2a2a30;
+    --line-soft: #1e1e22;
+
+    --text-hi: #ffffff;
+    --text-md: #c8c8cf;
+    --text-lo: #6e6e78;
+
+    --accent-red: #e10600;
+    --accent-red-glow: rgba(225,6,0,0.35);
+    --accent-gold: #ffd24a;
+    --accent-amber: #ffa500;
+    --accent-green: #21c265;
+    --accent-down: #e64545;
+
+    --safe-x: 64px;
+    --safe-y: 48px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    font-family: 'Titillium Web', system-ui, sans-serif;
+    color: var(--text-hi);
+    background: transparent;  /* ALWAYS transparent — background is its own layer */
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+
+  .stage {
+    position: relative;
+    width: 1920px; height: 1080px;
+    padding: var(--safe-y) var(--safe-x);
+    display: flex; flex-direction: column;
+  }
+
+  /* ---------- HEADER ---------- */
+  .header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    margin-bottom: 28px;
+  }
+  .header-left { display: flex; align-items: center; gap: 24px; }
+
+  .club-badge {
+    width: 96px; height: 96px;
+    border-radius: 50%;
+    background: rgba(15,15,18,0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 2px solid var(--line);
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.04) inset,
+      0 8px 24px rgba(0,0,0,0.6);
+    display: grid; place-items: center;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+  .club-badge svg { width: 56px; height: 56px; opacity: 0.95; }
+
+  .title-block { display: flex; flex-direction: column; gap: 2px; }
+  .title-eyebrow {
+    font-size: 16px; font-weight: 600; letter-spacing: 0.28em;
+    color: var(--text-md); text-transform: uppercase;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  }
+  .title-main {
+    font-size: 54px; font-weight: 900; line-height: 1;
+    letter-spacing: -0.01em; text-transform: uppercase;
+    color: var(--text-hi);
+    text-shadow: 0 4px 16px rgba(0,0,0,0.7);
+  }
+
+  .host {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px;
+    background: rgba(16,16,19,0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent-red);
+  }
+  .host .fi { width: 36px; height: 27px; box-shadow: 0 0 0 1px rgba(0,0,0,0.4); }
+  .host-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px; font-weight: 700; letter-spacing: 0.14em;
+  }
+
+  /* ---------- SUBHEADER ---------- */
+  .subheader {
+    height: 64px;
+    display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 28px;
+    background: rgba(20,20,24,0.82);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 10px;
+    position: relative;
+  }
+  .subheader::after {
+    content: ''; position: absolute; left: 50%; bottom: -1px;
+    width: 240px; height: 3px;
+    background: var(--accent-red);
+    box-shadow: 0 0 24px var(--accent-red-glow);
+    transform: translateX(-50%);
+  }
+  .sub-label {
+    font-size: 20px; font-weight: 700; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--text-hi);
+  }
+  .sub-mid {
+    font-size: 18px; font-weight: 700; letter-spacing: 0.28em;
+    text-transform: uppercase; color: var(--text-hi);
+    text-align: center;
+  }
+  .sub-right {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.24em;
+    text-transform: uppercase; color: var(--text-lo);
+    text-align: right;
+  }
+
+  /* ---------- COLUMN HEADERS ---------- */
+  .col-headers {
+    display: grid;
+    grid-template-columns: 72px 72px 1fr 140px 160px;
+    align-items: center;
+    padding: 8px 28px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--text-lo);
+    border-bottom: 1px solid var(--line-soft);
+    background: rgba(10,10,12,0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .col-headers .c-gap { text-align: right; }
+  .col-headers .c-pts { text-align: right; }
+
+  /* ---------- TABLE ---------- */
+  .table {
+    flex: 1;
+    display: flex; flex-direction: column;
+    background: rgba(10,10,12,0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-left: 1px solid var(--line-soft);
+    border-right: 1px solid var(--line-soft);
+  }
+  .row {
+    height: 58px;
+    display: grid;
+    grid-template-columns: 72px 72px 1fr 140px 160px;
+    align-items: center;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--line-soft);
+    position: relative;
+    transition: background 220ms ease;
+  }
+  .row.row-a { background: rgba(19,19,22,0.55); }
+  .row.row-b { background: rgba(24,24,28,0.55); }
+  .row.is-leader::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px; background: var(--accent-gold);
+    box-shadow: 0 0 16px rgba(255,210,74,0.5);
+  }
+
+  .pos {
+    display: flex; align-items: baseline; gap: 6px;
+    font-family: 'Titillium Web', sans-serif;
+  }
+  .pos-num {
+    font-size: 30px; font-weight: 900;
+    font-style: italic;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-md);
+    line-height: 1;
+  }
+  .row.is-leader .pos-num { color: var(--accent-gold); }
+  .pos-trend {
+    font-size: 11px; line-height: 1;
+    font-weight: 700;
+  }
+  .pos-trend.up   { color: var(--accent-green); }
+  .pos-trend.down { color: var(--accent-down); }
+  .pos-trend.flat { color: var(--text-lo); }
+
+  .livery {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    border: 2px solid #0a0a0b;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
+    background:
+      linear-gradient(180deg, var(--liv-p, #888) 50%, var(--liv-s, #444) 50%);
+  }
+
+  .pilot {
+    display: flex; align-items: center; gap: 14px;
+    min-width: 0;
+  }
+  .pilot-flag {
+    width: 32px; height: 24px; flex: 0 0 auto;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+  }
+  .pilot-name {
+    display: flex; align-items: baseline; gap: 10px;
+    min-width: 0;
+  }
+  .first { font-size: 22px; font-weight: 400; color: var(--text-md); }
+  .last  {
+    font-size: 22px; font-weight: 900;
+    color: var(--text-hi); text-transform: uppercase;
+    letter-spacing: 0.01em;
+  }
+  .country-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.15em;
+    color: var(--text-lo);
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    margin-left: 4px;
+  }
+
+  .pts {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px; font-weight: 700;
+    color: var(--text-hi);
+    font-variant-numeric: tabular-nums;
+  }
+  .pts .unit { font-size: 11px; color: var(--text-lo); margin-left: 4px; }
+
+  /* SCORING SYSTEM MODES */
+  .pts-fai, .pts-spg { display: none; }
+  body.scoring-fai .pts-fai { display: inline; }
+  body.scoring-spg .pts-spg { display: inline; }
+
+  .gap {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-md);
+  }
+  .gap.leader-tag {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+  }
+  .gap.leader-tag .gap-time {
+    color: var(--accent-gold);
+    font-size: 20px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .gap.leader-tag .gap-label {
+    color: var(--accent-gold);
+    font-size: 10px; font-weight: 900;
+    letter-spacing: 0.28em;
+    opacity: 0.8;
+  }
+  .gap.close { color: var(--accent-amber); }
+
+  @keyframes flash-up   { 0% { background: rgba(33,194,101,0.18); } 100% {} }
+  @keyframes flash-down { 0% { background: rgba(230,69,69,0.18); }  100% {} }
+  .row-flash-up   { animation: flash-up 1.2s ease-out; }
+  .row-flash-down { animation: flash-down 1.2s ease-out; }
+
+  /* ---------- FOOTER ---------- */
+  .footer {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 4px;
+  }
+  .watermark {
+    grid-column: 2;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.28em;
+    text-transform: uppercase; color: var(--text-lo);
+    opacity: 0.7;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+
+  .ticker {
+    grid-column: 3;
+    justify-self: end;
+    display: flex; align-items: stretch;
+    background: rgba(16,16,19,0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    overflow: hidden;
+    min-width: 480px;
+  }
+  .ticker-accent { width: 4px; background: var(--accent-red); }
+  .ticker-body {
+    display: flex; align-items: center; gap: 20px;
+    padding: 10px 18px;
+  }
+  .ticker-block { display: flex; flex-direction: column; gap: 2px; }
+  .ticker-key {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.24em;
+    text-transform: uppercase; color: var(--text-lo);
+  }
+  .ticker-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 700; color: var(--text-hi);
+    letter-spacing: 0.06em;
+  }
+  .ticker-sep {
+    width: 1px; align-self: stretch; background: var(--line);
+  }
+</style>
+</head>
+<body class="scoring-fai">
+<div class="stage">
+
+  <!-- ============ HEADER ============ -->
+  <header class="header">
+    <div class="header-left">
+      <div class="club-badge" aria-label="Club logo">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 32 L32 28 L60 32 L32 36 Z" fill="#ffffff"/>
+          <path d="M30 14 L34 14 L34 50 L30 50 Z" fill="#ffffff"/>
+          <circle cx="32" cy="32" r="3" fill="#e10600"/>
+        </svg>
+      </div>
+      <div class="title-block">
+        <div class="title-eyebrow">Slovenian National</div>
+        <h1 class="title-main">Gliding Championships</h1>
+      </div>
+    </div>
+
+    <div class="host">
+      <span class="fi fi-si" role="img" aria-label="Slovenia"></span>
+      <span class="host-text">LJMS · SLO</span>
+    </div>
+  </header>
+
+  <!-- ============ SUBHEADER ============ -->
+  <div class="subheader">
+    <div class="sub-label">Standings</div>
+    <div class="sub-mid">18-Metre · Day 3</div>
+    <div class="sub-right">Day Points</div>
+  </div>
+
+  <!-- ============ COLUMN HEADERS ============ -->
+  <div class="col-headers">
+    <div>Pos</div>
+    <div>Livery</div>
+    <div>Pilot</div>
+    <div class="c-pts">Points</div>
+    <div class="c-gap">Time</div>
+  </div>
+
+  <!-- ============ TABLE ============ -->
+  <div class="table" id="standings">
+
+    <div class="row row-a is-leader" data-pos="1" data-time-secs="12258">
+      <div class="pos">
+        <span class="pos-num">1</span>
+        <span class="pos-trend flat">─</span>
+      </div>
+      <div class="livery" style="--liv-p:#005ce6; --liv-s:#ffffff;"></div>
+      <div class="pilot">
+        <span class="fi fi-si pilot-flag" aria-label="Slovenia"></span>
+        <div class="pilot-name">
+          <span class="first">Jan</span>
+          <span class="last">Novak</span>
+          <span class="country-tag">SLO</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">1,000</span><span class="pts-spg">10</span> <span class="unit">PTS</span></div>
+      <div class="gap leader-tag" id="leader-time"><span class="gap-time">3:24:18</span><span class="gap-label">LEADER</span></div>
+    </div>
+
+    <div class="row row-b" data-pos="2" data-gap-secs="222">
+      <div class="pos">
+        <span class="pos-num">2</span>
+        <span class="pos-trend up">▲ 1</span>
+      </div>
+      <div class="livery" style="--liv-p:#000000; --liv-s:#ffcc00;"></div>
+      <div class="pilot">
+        <span class="fi fi-de pilot-flag" aria-label="Germany"></span>
+        <div class="pilot-name">
+          <span class="first">Marco</span>
+          <span class="last">Schmidt</span>
+          <span class="country-tag">GER</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">982</span><span class="pts-spg">9</span> <span class="unit">PTS</span></div>
+      <div class="gap">+3:42</div>
+    </div>
+
+    <div class="row row-a" data-pos="3">
+      <div class="pos">
+        <span class="pos-num">3</span>
+        <span class="pos-trend down">▼ 1</span>
+      </div>
+      <div class="livery" style="--liv-p:#0055a4; --liv-s:#ef4135;"></div>
+      <div class="pilot">
+        <span class="fi fi-fr pilot-flag" aria-label="France"></span>
+        <div class="pilot-name">
+          <span class="first">Pierre</span>
+          <span class="last">Durand</span>
+          <span class="country-tag">FRA</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">964</span><span class="pts-spg">8</span> <span class="unit">PTS</span></div>
+      <div class="gap">+7:21</div>
+    </div>
+
+    <div class="row row-b" data-pos="4">
+      <div class="pos">
+        <span class="pos-num">4</span>
+        <span class="pos-trend up">▲ 2</span>
+      </div>
+      <div class="livery" style="--liv-p:#11457e; --liv-s:#d7141a;"></div>
+      <div class="pilot">
+        <span class="fi fi-cz pilot-flag" aria-label="Czech Republic"></span>
+        <div class="pilot-name">
+          <span class="first">Tomas</span>
+          <span class="last">Kovac</span>
+          <span class="country-tag">CZE</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">947</span><span class="pts-spg">7</span> <span class="unit">PTS</span></div>
+      <div class="gap">+10:50</div>
+    </div>
+
+    <div class="row row-a" data-pos="5">
+      <div class="pos">
+        <span class="pos-num">5</span>
+        <span class="pos-trend flat">─</span>
+      </div>
+      <div class="livery" style="--liv-p:#c60c30; --liv-s:#ffffff;"></div>
+      <div class="pilot">
+        <span class="fi fi-dk pilot-flag" aria-label="Denmark"></span>
+        <div class="pilot-name">
+          <span class="first">Erik</span>
+          <span class="last">Lassen</span>
+          <span class="country-tag">DEN</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">921</span><span class="pts-spg">6</span> <span class="unit">PTS</span></div>
+      <div class="gap">+16:08</div>
+    </div>
+
+    <div class="row row-b" data-pos="6">
+      <div class="pos">
+        <span class="pos-num">6</span>
+        <span class="pos-trend down">▼ 2</span>
+      </div>
+      <div class="livery" style="--liv-p:#aa151b; --liv-s:#f1bf00;"></div>
+      <div class="pilot">
+        <span class="fi fi-es pilot-flag" aria-label="Spain"></span>
+        <div class="pilot-name">
+          <span class="first">Luis</span>
+          <span class="last">Torres</span>
+          <span class="country-tag">ESP</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">898</span><span class="pts-spg">5</span> <span class="unit">PTS</span></div>
+      <div class="gap">+20:50</div>
+    </div>
+
+    <div class="row row-a" data-pos="7">
+      <div class="pos">
+        <span class="pos-num">7</span>
+        <span class="pos-trend up">▲ 3</span>
+      </div>
+      <div class="livery" style="--liv-p:#006aa7; --liv-s:#fecc00;"></div>
+      <div class="pilot">
+        <span class="fi fi-se pilot-flag" aria-label="Sweden"></span>
+        <div class="pilot-name">
+          <span class="first">Anders</span>
+          <span class="last">Berg</span>
+          <span class="country-tag">SWE</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">872</span><span class="pts-spg">4</span> <span class="unit">PTS</span></div>
+      <div class="gap">+26:09</div>
+    </div>
+
+    <div class="row row-b" data-pos="8">
+      <div class="pos">
+        <span class="pos-num">8</span>
+        <span class="pos-trend down">▼ 1</span>
+      </div>
+      <div class="livery" style="--liv-p:#009246; --liv-s:#ce2b37;"></div>
+      <div class="pilot">
+        <span class="fi fi-it pilot-flag" aria-label="Italy"></span>
+        <div class="pilot-name">
+          <span class="first">Paolo</span>
+          <span class="last">Rossi</span>
+          <span class="country-tag">ITA</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">845</span><span class="pts-spg">3</span> <span class="unit">PTS</span></div>
+      <div class="gap">+31:40</div>
+    </div>
+
+    <div class="row row-a" data-pos="9">
+      <div class="pos">
+        <span class="pos-num">9</span>
+        <span class="pos-trend flat">─</span>
+      </div>
+      <div class="livery" style="--liv-p:#012169; --liv-s:#c8102e;"></div>
+      <div class="pilot">
+        <span class="fi fi-gb pilot-flag" aria-label="United Kingdom"></span>
+        <div class="pilot-name">
+          <span class="first">Sam</span>
+          <span class="last">Walker</span>
+          <span class="country-tag">GBR</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">812</span><span class="pts-spg">2</span> <span class="unit">PTS</span></div>
+      <div class="gap">+38:25</div>
+    </div>
+
+    <div class="row row-b" data-pos="10">
+      <div class="pos">
+        <span class="pos-num">10</span>
+        <span class="pos-trend down">▼ 1</span>
+      </div>
+      <div class="livery" style="--liv-p:#ed2939; --liv-s:#ffffff;"></div>
+      <div class="pilot">
+        <span class="fi fi-at pilot-flag" aria-label="Austria"></span>
+        <div class="pilot-name">
+          <span class="first">Nico</span>
+          <span class="last">Fischer</span>
+          <span class="country-tag">AUT</span>
+        </div>
+      </div>
+      <div class="pts"><span class="pts-fai">784</span><span class="pts-spg">1</span> <span class="unit">PTS</span></div>
+      <div class="gap">+44:08</div>
+    </div>
+
+  </div>
+
+  <!-- ============ FOOTER ============ -->
+  <div class="footer">
+    <div class="watermark">Championship Broadcast Studio · github.com/[repo]</div>
+    <div class="ticker" role="status" aria-label="Race information">
+      <div class="ticker-accent"></div>
+      <div class="ticker-body">
+        <div class="ticker-block">
+          <div class="ticker-key">Round</div>
+          <div class="ticker-val">03 / 08</div>
+        </div>
+        <div class="ticker-sep"></div>
+        <div class="ticker-block">
+          <div class="ticker-key">Task</div>
+          <div class="ticker-val">AAT · 342 KM</div>
+        </div>
+        <div class="ticker-sep"></div>
+        <div class="ticker-block">
+          <div class="ticker-key">Class</div>
+          <div class="ticker-val">18-METRE</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    const params = new URLSearchParams(location.search);
+
+    // ---- Scoring system ----
+    let scoring = 'fai';
+    try {
+      const saved = localStorage.getItem('cbs_scoring_system');
+      if (saved === 'spg' || saved === 'fai') scoring = saved;
+    } catch (e) {}
+    const scoringParam = params.get('scoring');
+    if (scoringParam === 'spg' || scoringParam === 'fai') scoring = scoringParam;
+    setScoring(scoring);
+
+    function setScoring(value) {
+      document.body.classList.toggle('scoring-fai', value === 'fai');
+      document.body.classList.toggle('scoring-spg', value === 'spg');
+    }
+
+    if (window.BroadcastChannel) {
+      try {
+        const ch = new BroadcastChannel('cbs');
+        ch.onmessage = (ev) => {
+          const msg = ev.data || {};
+          if (msg.type === 'scoring-changed' && (msg.value === 'fai' || msg.value === 'spg')) {
+            setScoring(msg.value);
+          }
+        };
+      } catch (e) {}
+    }
+
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'cbs_scoring_system' && (e.newValue === 'fai' || e.newValue === 'spg')) {
+        setScoring(e.newValue);
+      }
+    });
+
+    window.cbsStandings = { setScoring };
+  })();
+</script>
+</body>
+</html>

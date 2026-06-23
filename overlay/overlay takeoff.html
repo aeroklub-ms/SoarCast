@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overlay — Takeoff</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { background: transparent; margin: 0; padding: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+  .skew-x-10 { transform: skewX(-10deg); }
+  .unskew-x-10 { transform: skewX(10deg); }
+  .broadcast-teal { background-color: #14A89C; }
+  .broadcast-dark { background-color: rgba(13, 13, 13, 0.92); }
+  .border-b-teal { border-bottom: 3px solid #14A89C; }
+  .glow-teal { box-shadow: 0 2px 8px -2px #14A89C; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  /* fade-in from below + fade-out, broadcast-style snap */
+  .stage { opacity: 0; transform: translateY(20px); pointer-events: none;
+           transition: opacity .35s ease-out, transform .35s ease-out; }
+  .stage.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+<div id="stage" class="stage fixed inset-0 flex items-end justify-end">
+  <div class="mr-[80px] mb-[80px]">
+
+    <!-- Takeoff card: flag + name + country code only -->
+    <div class="flex items-stretch skew-x-10 border-b-teal glow-teal overflow-hidden">
+      <!-- Teal accent bar (no number — they haven't placed yet) -->
+      <div class="broadcast-teal w-[12px]"></div>
+      <!-- Flag -->
+      <div id="flag" class="w-[56px] flex flex-col"></div>
+      <!-- Name -->
+      <div class="broadcast-dark pl-6 pr-12 py-4 flex items-center min-w-[300px]">
+        <div class="unskew-x-10 flex items-baseline gap-3">
+          <span id="name" class="text-2xl tracking-tight">Jan <span class="font-bold">NOVAK</span></span>
+          <span id="natCode" class="text-base font-semibold uppercase tracking-wider text-[#c4c7c8]">SLO</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const FLAGS = {
+  SLO: ['#FFFFFF', '#005CE6', '#FF0000'],
+  GER: ['#000000', '#DD0000', '#FFCE00'],
+  AUT: ['#ED2939', '#FFFFFF', '#ED2939'],
+  ITA: { vertical: ['#009246', '#FFFFFF', '#CE2B37'] },
+  FRA: { vertical: ['#0055A4', '#FFFFFF', '#EF4135'] },
+  HUN: ['#CE2939', '#FFFFFF', '#477050'],
+  CRO: ['#FF0000', '#FFFFFF', '#171796'],
+  CZE: ['#11457E', '#FFFFFF', '#D7141A'],
+  POL: ['#FFFFFF', '#DC143C', '#FFFFFF'],
+  SUI: ['#FF0000', '#FF0000', '#FF0000'],
+  GBR: ['#012169', '#FFFFFF', '#C8102E'],
+  USA: ['#B22234', '#FFFFFF', '#3C3B6E'],
+};
+
+function renderFlag(code) {
+  const el = document.getElementById('flag');
+  const def = FLAGS[code] || FLAGS.SLO;
+  el.innerHTML = '';
+  el.style.flexDirection = (def.vertical) ? 'row' : 'column';
+  const stripes = def.vertical || def;
+  stripes.forEach(c => {
+    const s = document.createElement('div');
+    s.style.cssText = def.vertical
+      ? `flex:1;height:100%;background:${c};`
+      : `flex:1;width:100%;background:${c};`;
+    el.appendChild(s);
+  });
+}
+
+function nationToCode(n) {
+  if (!n) return 'SLO';
+  const cleaned = n.replace(/[\p{Emoji}\s]/gu, '').toUpperCase();
+  const map = {
+    SLOVENIA:'SLO', GERMANY:'GER', AUSTRIA:'AUT', ITALY:'ITA', FRANCE:'FRA',
+    HUNGARY:'HUN', CROATIA:'CRO', CZECHIA:'CZE', 'CZECHREPUBLIC':'CZE',
+    POLAND:'POL', SWITZERLAND:'SUI', UNITEDKINGDOM:'GBR', UNITEDSTATES:'USA',
+  };
+  return map[cleaned] || cleaned.slice(0,3);
+}
+
+function formatName(full) {
+  if (!full) return { first: 'Jan', last: 'NOVAK' };
+  const parts = full.trim().split(/\s+/);
+  const first = parts.slice(0, -1).join(' ') || parts[0];
+  const last = (parts.length > 1 ? parts[parts.length-1] : '').toUpperCase();
+  return { first, last };
+}
+
+async function loadPilot() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  if (!id || !window.storage) return;
+
+  try {
+    const res = await window.storage.get('pilots:' + id);
+    const p = res ? JSON.parse(res.value) : null;
+    if (!p) return;
+
+    const { first, last } = formatName(p.name);
+    document.getElementById('name').innerHTML = `${first} <span class="font-bold">${last}</span>`;
+
+    const code = nationToCode(p.nationality);
+    document.getElementById('natCode').textContent = code;
+    renderFlag(code);
+  } catch (e) { console.warn('pilot load failed', e); }
+}
+
+// ---------- BroadcastChannel listener (driven by tracker.html) ----------
+// Show on every 'takeoff' event for 3 s, then auto-clear.  URL-param loading
+// above still works for manual OBS testing — the channel just overlays new
+// pilot data when an event arrives.
+const _stage = document.getElementById('stage');
+let _hideTimer = null;
+function renderPilot(p) {
+  const { first, last } = formatName(p.name);
+  document.getElementById('name').innerHTML =
+    `${first} <span class="font-bold">${last}</span>`;
+  const code = nationToCode(p.nationality || p.nat);
+  document.getElementById('natCode').textContent = code;
+  renderFlag(code);
+}
+try {
+  const bc = new BroadcastChannel('cbs_overlays');
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'takeoff' || !m.pilot) return;
+    renderPilot(m.pilot);
+    _stage.classList.add('show');
+    clearTimeout(_hideTimer);
+    _hideTimer = setTimeout(() => _stage.classList.remove('show'), 3000);
+  };
+} catch (e) { console.warn('overlay bus unavailable', e); }
+
+renderFlag('SLO');
+loadPilot();
+</script>
+</body></html>

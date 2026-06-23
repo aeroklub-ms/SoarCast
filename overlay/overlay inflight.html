@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overlay — In-Flight</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { background: transparent; margin: 0; padding: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+  .skew-x-10 { transform: skewX(-10deg); }
+  .unskew-x-10 { transform: skewX(10deg); }
+  .broadcast-teal { background-color: #14A89C; }
+  .broadcast-dark { background-color: rgba(13, 13, 13, 0.92); }
+  .border-b-teal { border-bottom: 3px solid #14A89C; }
+  .glow-teal { box-shadow: 0 2px 8px -2px #14A89C; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  /* dev preview chequer */
+  .preview body { background: repeating-conic-gradient(#2a2a2a 0% 25%, #333 0% 50%) 50% / 20px 20px; }
+  /* fade-in from below — same motion language as the takeoff card */
+  .stage { opacity: 0; transform: translateY(20px); pointer-events: none;
+           transition: opacity .4s ease-out, transform .4s ease-out; }
+  .stage.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+<!-- 1920×1080 stage, transparent in OBS -->
+<div id="stage" class="stage fixed inset-0 flex items-end justify-end">
+  <div class="flex flex-col gap-2 mr-[80px] mb-[80px]">
+
+    <!-- Main card -->
+    <div class="flex items-stretch skew-x-10 border-b-teal glow-teal overflow-hidden">
+      <!-- Position -->
+      <div class="broadcast-teal w-[56px] flex items-center justify-center">
+        <span id="pos" class="unskew-x-10 mono text-2xl font-bold">1</span>
+      </div>
+      <!-- Flag -->
+      <div id="flag" class="w-[56px] flex flex-col"></div>
+      <!-- Name & glider -->
+      <div class="broadcast-dark pl-6 pr-12 py-3 flex flex-col justify-center min-w-[320px]">
+        <div class="unskew-x-10 flex flex-col gap-1">
+          <div class="flex items-baseline gap-2">
+            <span id="name" class="text-xl tracking-tight">Jan <span class="font-bold">NOVAK</span></span>
+            <span id="natCode" class="text-sm font-semibold uppercase tracking-wider text-[#c4c7c8]">SLO</span>
+          </div>
+          <div id="glider" class="mono text-[12px] text-[#c4c7c8]">ASG-29 · JS1</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry line (right-aligned) -->
+    <div class="broadcast-dark px-4 py-1 skew-x-10 inline-block self-end">
+      <div class="unskew-x-10 mono text-[11px] tracking-wider uppercase flex gap-4 text-[#c4c7c8]">
+        <span>GROUND SPEED <span id="gs" class="text-white font-bold">— km/h</span></span>
+        <span>·</span>
+        <span>ALT <span id="alt" class="text-white font-bold">— m</span></span>
+        <span>·</span>
+        <span>CLIMB <span id="climb" class="text-white font-bold">— m/s</span></span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ---------- country code → flag stripes ----------
+// Minimal lookup for now; add more as needed.
+const FLAGS = {
+  SLO: ['#FFFFFF', '#005CE6', '#FF0000'], // Slovenia (horizontal tricolor)
+  GER: ['#000000', '#DD0000', '#FFCE00'],
+  AUT: ['#ED2939', '#FFFFFF', '#ED2939'],
+  ITA: { vertical: ['#009246', '#FFFFFF', '#CE2B37'] },
+  FRA: { vertical: ['#0055A4', '#FFFFFF', '#EF4135'] },
+  HUN: ['#CE2939', '#FFFFFF', '#477050'],
+  CRO: ['#FF0000', '#FFFFFF', '#171796'],
+  CZE: ['#11457E', '#FFFFFF', '#D7141A'], // simplified
+  POL: ['#FFFFFF', '#DC143C', '#FFFFFF'], // 2-stripe; we just draw white/red
+  SUI: ['#FF0000', '#FF0000', '#FF0000'],
+  GBR: ['#012169', '#FFFFFF', '#C8102E'], // simplified
+  USA: ['#B22234', '#FFFFFF', '#3C3B6E'],
+};
+
+function renderFlag(code) {
+  const el = document.getElementById('flag');
+  const def = FLAGS[code] || FLAGS.SLO;
+  el.innerHTML = '';
+  if (Array.isArray(def)) {
+    // horizontal stripes
+    def.forEach(c => {
+      const s = document.createElement('div');
+      s.style.cssText = `flex:1;width:100%;background:${c};`;
+      el.appendChild(s);
+    });
+  } else if (def.vertical) {
+    el.style.flexDirection = 'row';
+    def.vertical.forEach(c => {
+      const s = document.createElement('div');
+      s.style.cssText = `flex:1;height:100%;background:${c};`;
+      el.appendChild(s);
+    });
+  }
+}
+
+// ---------- pilot loading ----------
+function nationToCode(n) {
+  if (!n) return 'SLO';
+  // strip flag emoji prefix if present and trim
+  const cleaned = n.replace(/[\p{Emoji}\s]/gu, '').toUpperCase();
+  // crude mapping; the panel stores full country names so just take first 3
+  const map = {
+    SLOVENIA:'SLO', GERMANY:'GER', AUSTRIA:'AUT', ITALY:'ITA', FRANCE:'FRA',
+    HUNGARY:'HUN', CROATIA:'CRO', CZECHIA:'CZE', 'CZECHREPUBLIC':'CZE',
+    POLAND:'POL', SWITZERLAND:'SUI', UNITEDKINGDOM:'GBR', UNITEDSTATES:'USA',
+  };
+  return map[cleaned] || cleaned.slice(0,3);
+}
+
+function formatName(full) {
+  if (!full) return { first: 'Jan', last: 'NOVAK' };
+  const parts = full.trim().split(/\s+/);
+  const first = parts.slice(0, -1).join(' ') || parts[0];
+  const last = (parts.length > 1 ? parts[parts.length-1] : '').toUpperCase();
+  return { first, last };
+}
+
+async function loadPilot() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  if (!id || !window.storage) return; // keep placeholders
+
+  try {
+    const res = await window.storage.get('pilots:' + id);
+    const p = res ? JSON.parse(res.value) : null;
+    if (!p) return;
+
+    const { first, last } = formatName(p.name);
+    document.getElementById('name').innerHTML = `${first} <span class="font-bold">${last}</span>`;
+
+    const code = nationToCode(p.nationality);
+    document.getElementById('natCode').textContent = code;
+    renderFlag(code);
+
+    document.getElementById('glider').textContent =
+      [p.gliderType, p.competitionId].filter(Boolean).join(' · ');
+
+    if (params.get('pos')) document.getElementById('pos').textContent = params.get('pos');
+  } catch (e) { console.warn('pilot load failed', e); }
+}
+
+// ---------- telemetry (URL params for now; later wire to OGN) ----------
+function loadTelemetry() {
+  const params = new URLSearchParams(location.search);
+  const gs = params.get('gs'), alt = params.get('alt'), climb = params.get('climb');
+  if (gs) document.getElementById('gs').textContent = `${gs} km/h`;
+  if (alt) document.getElementById('alt').textContent = `${alt} m`;
+  if (climb) document.getElementById('climb').textContent = `${climb} m/s`;
+}
+
+// ---------- BroadcastChannel listener (driven by tracker.html) ----------
+// On 'inflight' event: render the card, fade in, hold for 12 s, fade out.
+// On 'inflight_telemetry' events (every second): refresh GS/ALT/CLIMB only
+// if the card is currently visible AND the flarm matches.  This lets the
+// live numbers tick while the card is on screen without re-triggering the
+// intro animation.
+const _stage = document.getElementById('stage');
+let _showTimer = null;
+let _shownFlarm = null;
+function renderPilot(p, posNum) {
+  const { first, last } = formatName(p.name);
+  document.getElementById('name').innerHTML =
+    `${first} <span class="font-bold">${last}</span>`;
+  const code = nationToCode(p.nationality || p.nat);
+  document.getElementById('natCode').textContent = code;
+  renderFlag(code);
+  document.getElementById('glider').textContent =
+    [p.gliderType, p.competitionId || p.compId].filter(Boolean).join(' \xb7 ');
+  if (posNum != null) document.getElementById('pos').textContent = String(posNum);
+}
+function renderTelem(gs, alt, climb) {
+  if (gs    != null) document.getElementById('gs').textContent    = `${gs} km/h`;
+  if (alt   != null) document.getElementById('alt').textContent   = `${alt} m`;
+  if (climb != null) document.getElementById('climb').textContent = `${climb} m/s`;
+}
+try {
+  const bc = new BroadcastChannel('cbs_overlays');
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (!m) return;
+    if (m.type === 'inflight' && m.pilot) {
+      renderPilot(m.pilot, m.pos);
+      renderTelem(m.gs, m.alt, m.climb);
+      _shownFlarm = m.pilot.flarm;
+      _stage.classList.add('show');
+      clearTimeout(_showTimer);
+      _showTimer = setTimeout(() => {
+        _stage.classList.remove('show');
+        _shownFlarm = null;
+      }, 12000);
+    } else if (m.type === 'inflight_telemetry'
+               && m.flarm && m.flarm === _shownFlarm) {
+      renderTelem(m.gs, m.alt, m.climb);
+    }
+  };
+} catch (e) { console.warn('overlay bus unavailable', e); }
+
+renderFlag('SLO');
+loadPilot();
+loadTelemetry();
+</script>
+</body></html>
